@@ -1,115 +1,111 @@
 package zed.rainxch.details.presentation
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularWavyProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.github.fletchmckee.liquid.LiquidState
-import io.github.fletchmckee.liquid.liquefiable
-import io.github.fletchmckee.liquid.liquid
-import io.github.fletchmckee.liquid.rememberLiquidState
+import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.getString
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
+import zed.rainxch.core.domain.isDesktop
+import zed.rainxch.core.domain.model.error.RefreshError
+import zed.rainxch.core.domain.model.installation.InstallSource
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
 import zed.rainxch.core.presentation.components.ScrollbarContainer
+import zed.rainxch.core.presentation.components.bars.KomiTopBar
+import zed.rainxch.core.presentation.components.buttons.KomiActionRow
+import zed.rainxch.core.presentation.components.buttons.KomiActionRowItem
+import zed.rainxch.core.presentation.components.buttons.KomiButton
+import zed.rainxch.core.presentation.components.buttons.KomiButtonSize
+import zed.rainxch.core.presentation.components.buttons.KomiButtonVariant
+import zed.rainxch.core.presentation.components.buttons.KomiIconButton
+import zed.rainxch.core.presentation.components.overlays.KomiDialog
+import zed.rainxch.core.presentation.components.overlays.KomiToastState
+import zed.rainxch.core.presentation.components.overlays.rememberKomiToastState
+import zed.rainxch.core.presentation.components.progress.KomiCircularProgress
+import zed.rainxch.core.presentation.components.refresh.KomiPullToRefresh
+import zed.rainxch.core.presentation.components.scaffold.KomiScaffold
+import zed.rainxch.core.presentation.components.text.KomiText
+import zed.rainxch.core.presentation.components.text.KomiTextRole
 import zed.rainxch.core.presentation.locals.LocalScrollbarEnabled
-import zed.rainxch.core.presentation.theme.GithubStoreTheme
+import zed.rainxch.core.presentation.personality.utils.PersonalityPreview
 import zed.rainxch.core.presentation.utils.ObserveAsEvents
 import zed.rainxch.core.presentation.utils.arrowKeyScroll
-import zed.rainxch.core.presentation.utils.isLiquidFrostAvailable
-import zed.rainxch.details.presentation.components.LanguagePicker
+import zed.rainxch.core.presentation.utils.contentWidthCap
+import zed.rainxch.core.presentation.utils.isPullToRefreshSupported
+import zed.rainxch.details.presentation.components.ApkInspectSheet
 import zed.rainxch.details.presentation.components.sections.about
-import zed.rainxch.details.presentation.components.sections.author
 import zed.rainxch.details.presentation.components.sections.header
 import zed.rainxch.details.presentation.components.sections.logs
-import zed.rainxch.details.presentation.components.sections.reportIssue
+import zed.rainxch.details.presentation.components.sections.releaseChannel
 import zed.rainxch.details.presentation.components.sections.stats
 import zed.rainxch.details.presentation.components.sections.whatsNew
 import zed.rainxch.details.presentation.components.states.ErrorState
-import zed.rainxch.details.presentation.model.TranslationTarget
-import zed.rainxch.details.presentation.utils.LocalTopbarLiquidState
-import zed.rainxch.githubstore.core.presentation.res.Res
-import zed.rainxch.githubstore.core.presentation.res.add_to_favourites
-import zed.rainxch.githubstore.core.presentation.res.cancel
-import zed.rainxch.githubstore.core.presentation.res.confirm_uninstall_message
-import zed.rainxch.githubstore.core.presentation.res.confirm_uninstall_title
-import zed.rainxch.githubstore.core.presentation.res.dismiss
-import zed.rainxch.githubstore.core.presentation.res.downgrade_requires_uninstall
-import zed.rainxch.githubstore.core.presentation.res.downgrade_warning_message
-import zed.rainxch.githubstore.core.presentation.res.install_anyway
-import zed.rainxch.githubstore.core.presentation.res.install_permission_blocked_message
-import zed.rainxch.githubstore.core.presentation.res.install_permission_unavailable
-import zed.rainxch.githubstore.core.presentation.res.navigate_back
-import zed.rainxch.githubstore.core.presentation.res.open_repository
-import zed.rainxch.githubstore.core.presentation.res.open_with_external_installer
-import zed.rainxch.githubstore.core.presentation.res.remove_from_favourites
-import zed.rainxch.githubstore.core.presentation.res.repository_not_starred
-import zed.rainxch.githubstore.core.presentation.res.repository_starred
-import zed.rainxch.githubstore.core.presentation.res.share_repository
-import zed.rainxch.githubstore.core.presentation.res.signing_key_changed_message
-import zed.rainxch.githubstore.core.presentation.res.signing_key_changed_title
-import zed.rainxch.githubstore.core.presentation.res.star_from_github
-import zed.rainxch.githubstore.core.presentation.res.uninstall
-import zed.rainxch.githubstore.core.presentation.res.uninstall_first
-import zed.rainxch.githubstore.core.presentation.res.unstar_from_github
+import zed.rainxch.githubstore.core.presentation.res.*
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.ExperimentalTime
 
 @Composable
 fun DetailsRoot(
     onNavigateBack: () -> Unit,
     onNavigateToDeveloperProfile: (username: String) -> Unit,
     onOpenRepositoryInApp: (repoId: Long) -> Unit,
+    onNavigateToSearchByPlatform: (DiscoveryPlatform) -> Unit,
+    onNavigateToAbout: (repoId: Long, owner: String, repo: String, sourceHost: String?, translateTo: String?) -> Unit,
+    onNavigateToWhatsNew: (repoId: Long, owner: String, repo: String, sourceHost: String?) -> Unit,
+    onNavigateToIssues: (owner: String, repo: String) -> Unit,
+    onNavigateToSecurity: (owner: String, repo: String) -> Unit,
+    onNavigateToMarkdownViewer: (url: String) -> Unit,
     viewModel: DetailsViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val snackbarHostState = remember { SnackbarHostState() }
+    val toastState = rememberKomiToastState()
     val coroutineScope = rememberCoroutineScope()
 
     ObserveAsEvents(viewModel.events) { event ->
@@ -120,7 +116,30 @@ fun DetailsRoot(
 
             is DetailsEvent.OnMessage -> {
                 coroutineScope.launch {
-                    snackbarHostState.showSnackbar(event.message)
+                    toastState.show(event.message)
+                }
+            }
+
+            is DetailsEvent.OnRefreshError -> {
+                coroutineScope.launch {
+                    val seconds = event.retryAfterSeconds?.toInt() ?: 0
+                    val text = when (event.kind) {
+                        RefreshError.COOLDOWN -> getString(
+                            Res.string.details_refresh_snackbar_cooldown,
+                            seconds.coerceAtLeast(1),
+                        )
+
+                        RefreshError.BUDGET_EXHAUSTED -> getString(
+                            Res.string.details_refresh_snackbar_budget_exhausted,
+                            seconds.coerceAtLeast(1),
+                        )
+
+                        RefreshError.ARCHIVED -> getString(Res.string.details_refresh_snackbar_archived)
+                        RefreshError.NOT_FOUND -> getString(Res.string.details_refresh_snackbar_not_found)
+                        RefreshError.UPSTREAM -> getString(Res.string.details_refresh_snackbar_upstream)
+                        RefreshError.GENERIC -> getString(Res.string.details_refresh_snackbar_generic)
+                    }
+                    toastState.show(text)
                 }
             }
         }
@@ -128,7 +147,7 @@ fun DetailsRoot(
 
     DetailsScreen(
         state = state,
-        snackbarHostState = snackbarHostState,
+        toastState = toastState,
         onAction = { action ->
             when (action) {
                 DetailsAction.OnNavigateBackClick -> {
@@ -139,9 +158,13 @@ fun DetailsRoot(
                     onNavigateToDeveloperProfile(action.username)
                 }
 
+                is DetailsAction.OnPlatformChipClick -> {
+                    onNavigateToSearchByPlatform(action.platform)
+                }
+
                 is DetailsAction.OnMessage -> {
                     coroutineScope.launch {
-                        snackbarHostState.showSnackbar(getString(action.messageText))
+                        toastState.show(getString(action.messageText))
                     }
                 }
 
@@ -150,407 +173,430 @@ fun DetailsRoot(
                 }
             }
         },
+        onTranslateLanguage = state.repository?.let { repo ->
+            { code ->
+                onNavigateToAbout(
+                    repo.id,
+                    repo.owner.login,
+                    repo.name,
+                    repo.sourceHost,
+                    code,
+                )
+            }
+        },
+        onReadMoreWhatsNew = state.repository?.let { repo ->
+            {
+                onNavigateToWhatsNew(
+                    repo.id,
+                    repo.owner.login,
+                    repo.name,
+                    repo.sourceHost,
+                )
+            }
+        },
+        onOpenIssues = state.repository?.takeIf { it.sourceHost == null }?.let { repo ->
+            { onNavigateToIssues(repo.owner.login, repo.name) }
+        },
+        onOpenSecurity = state.repository?.takeIf { it.sourceHost == null }?.let { repo ->
+            { onNavigateToSecurity(repo.owner.login, repo.name) }
+        },
     )
 
     state.downgradeWarning?.let { warning ->
-        AlertDialog(
+        KomiDialog(
             onDismissRequest = {
                 viewModel.onAction(DetailsAction.OnDismissDowngradeWarning)
             },
             title = {
-                Text(
+                KomiText(
                     text = stringResource(Res.string.downgrade_requires_uninstall),
+                    role = KomiTextRole.Title,
+                    fontWeight = FontWeight.SemiBold,
+                    uppercase = false,
                 )
             },
             text = {
-                Text(
+                KomiText(
                     text =
                         stringResource(
                             Res.string.downgrade_warning_message,
                             warning.targetVersion,
                             warning.currentVersion,
                         ),
+                    role = KomiTextRole.Body,
                 )
             },
             confirmButton = {
-                TextButton(
+                KomiButton(
                     onClick = {
                         viewModel.onAction(DetailsAction.OnDismissDowngradeWarning)
                         viewModel.onAction(DetailsAction.UninstallApp)
                     },
-                ) {
-                    Text(
-                        text = stringResource(Res.string.uninstall_first),
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+                    label = stringResource(Res.string.uninstall_first),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
             },
             dismissButton = {
-                TextButton(
+                KomiButton(
                     onClick = {
                         viewModel.onAction(DetailsAction.OnDismissDowngradeWarning)
                     },
-                ) {
-                    Text(
-                        text = stringResource(Res.string.cancel),
-                    )
-                }
+                    label = stringResource(Res.string.cancel),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
             },
         )
     }
 
-    // Signing key changed warning dialog
     state.signingKeyWarning?.let { warning ->
-        AlertDialog(
+        KomiDialog(
             onDismissRequest = {
                 viewModel.onAction(DetailsAction.OnDismissSigningKeyWarning)
             },
             title = {
-                Text(
+                KomiText(
                     text = stringResource(Res.string.signing_key_changed_title),
+                    role = KomiTextRole.Title,
+                    fontWeight = FontWeight.SemiBold,
+                    uppercase = false,
                 )
             },
             text = {
-                Text(
+                KomiText(
                     text =
                         stringResource(
                             Res.string.signing_key_changed_message,
                             warning.expectedFingerprint.take(19),
                             warning.actualFingerprint.take(19),
                         ),
+                    role = KomiTextRole.Body,
                 )
             },
             confirmButton = {
-                TextButton(
+                KomiButton(
                     onClick = {
                         viewModel.onAction(DetailsAction.OnOverrideSigningKeyWarning)
                     },
-                ) {
-                    Text(
-                        text = stringResource(Res.string.install_anyway),
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+                    label = stringResource(Res.string.install_anyway),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
             },
             dismissButton = {
-                TextButton(
+                KomiButton(
                     onClick = {
                         viewModel.onAction(DetailsAction.OnDismissSigningKeyWarning)
                     },
-                ) {
-                    Text(
-                        text = stringResource(Res.string.cancel),
-                    )
-                }
+                    label = stringResource(Res.string.cancel),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
             },
         )
     }
 
-    // Uninstall confirmation dialog
     if (state.showUninstallConfirmation) {
         val appName = state.installedApp?.appName ?: ""
-        AlertDialog(
+        KomiDialog(
             onDismissRequest = {
                 viewModel.onAction(DetailsAction.OnDismissUninstallConfirmation)
             },
             title = {
-                Text(
+                KomiText(
                     text = stringResource(Res.string.confirm_uninstall_title),
+                    role = KomiTextRole.Title,
+                    fontWeight = FontWeight.SemiBold,
+                    uppercase = false,
                 )
             },
             text = {
-                Text(
+                KomiText(
                     text = stringResource(Res.string.confirm_uninstall_message, appName),
+                    role = KomiTextRole.Body,
                 )
             },
             confirmButton = {
-                TextButton(
+                KomiButton(
                     onClick = {
                         viewModel.onAction(DetailsAction.OnConfirmUninstall)
                     },
-                ) {
-                    Text(
-                        text = stringResource(Res.string.uninstall),
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+                    label = stringResource(Res.string.uninstall),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
             },
             dismissButton = {
-                TextButton(
+                KomiButton(
                     onClick = {
                         viewModel.onAction(DetailsAction.OnDismissUninstallConfirmation)
                     },
-                ) {
-                    Text(text = stringResource(Res.string.cancel))
-                }
+                    label = stringResource(Res.string.cancel),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
+            },
+        )
+    }
+
+    if (state.showUnlinkConfirmation) {
+        val appName = state.installedApp?.appName ?: ""
+        KomiDialog(
+            onDismissRequest = {
+                viewModel.onAction(DetailsAction.OnDismissUnlinkConfirmation)
+            },
+            title = {
+                KomiText(
+                    text = stringResource(Res.string.details_unlink_external_app_dialog_title),
+                    role = KomiTextRole.Title,
+                    fontWeight = FontWeight.SemiBold,
+                    uppercase = false,
+                )
+            },
+            text = {
+                KomiText(
+                    text = stringResource(
+                        Res.string.details_unlink_external_app_dialog_body,
+                        appName
+                    ),
+                    role = KomiTextRole.Body,
+                )
+            },
+            confirmButton = {
+                KomiButton(
+                    onClick = {
+                        viewModel.onAction(DetailsAction.OnConfirmUnlinkExternalApp)
+                    },
+                    label = stringResource(Res.string.details_unlink_external_app_dialog_confirm),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
+            },
+            dismissButton = {
+                KomiButton(
+                    onClick = {
+                        viewModel.onAction(DetailsAction.OnDismissUnlinkConfirmation)
+                    },
+                    label = stringResource(Res.string.cancel),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
             },
         )
     }
 
     if (state.showExternalInstallerPrompt) {
-        AlertDialog(
+        KomiDialog(
             onDismissRequest = {
                 viewModel.onAction(DetailsAction.DismissExternalInstallerPrompt)
             },
             title = {
-                Text(text = stringResource(Res.string.install_permission_unavailable))
+                KomiText(
+                    text = stringResource(Res.string.install_permission_unavailable),
+                    role = KomiTextRole.Title,
+                    fontWeight = FontWeight.SemiBold,
+                    uppercase = false,
+                )
             },
             text = {
-                Text(text = stringResource(Res.string.install_permission_blocked_message))
+                KomiText(
+                    text = stringResource(Res.string.install_permission_blocked_message),
+                    role = KomiTextRole.Body,
+                )
             },
             confirmButton = {
-                TextButton(
+                KomiButton(
                     onClick = {
                         viewModel.onAction(DetailsAction.OpenWithExternalInstaller)
                     },
-                ) {
-                    Text(text = stringResource(Res.string.open_with_external_installer))
-                }
+                    label = stringResource(Res.string.open_with_external_installer),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
             },
             dismissButton = {
-                TextButton(
+                KomiButton(
                     onClick = {
                         viewModel.onAction(DetailsAction.DismissExternalInstallerPrompt)
                     },
-                ) {
-                    Text(text = stringResource(Res.string.dismiss))
-                }
+                    label = stringResource(Res.string.dismiss),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
             },
+        )
+    }
+
+    if (state.isApkInspectSheetVisible) {
+        ApkInspectSheet(
+            inspection = state.apkInspection,
+            isLoading = state.isApkInspectLoading,
+            onDismiss = { viewModel.onAction(DetailsAction.OnDismissApkInspect) },
         )
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun DetailsScreen(
     state: DetailsState,
     onAction: (DetailsAction) -> Unit,
-    snackbarHostState: SnackbarHostState,
+    toastState: KomiToastState,
+    onTranslateLanguage: ((String) -> Unit)? = null,
+    onReadMoreWhatsNew: (() -> Unit)? = null,
+    onOpenIssues: (() -> Unit)? = null,
+    onOpenSecurity: (() -> Unit)? = null,
 ) {
-    val liquidTopbarState = rememberLiquidState()
-
-    CompositionLocalProvider(
-        value = LocalTopbarLiquidState provides liquidTopbarState,
-    ) {
-        Scaffold(
-            topBar = {
-                DetailsTopbar(
-                    state = state,
-                    onAction = onAction,
-                    liquidTopbarState = liquidTopbarState,
-                )
-            },
-            snackbarHost = {
-                SnackbarHost(
-                    hostState = snackbarHostState,
-                )
-            },
-            containerColor = MaterialTheme.colorScheme.background,
-            modifier =
-                Modifier.then(
-                    if (state.isLiquidGlassEnabled) {
-                        Modifier.liquefiable(liquidTopbarState)
-                    } else {
-                        Modifier
-                    },
-                ),
-        ) { innerPadding ->
-
-            LanguagePicker(
-                isVisible = state.isLanguagePickerVisible,
-                selectedLanguageCode =
-                    when (state.languagePickerTarget) {
-                        TranslationTarget.About -> state.aboutTranslation.targetLanguageCode
-                        TranslationTarget.WhatsNew -> state.whatsNewTranslation.targetLanguageCode
-                        null -> null
-                    },
-                deviceLanguageCode = state.deviceLanguageCode,
-                onLanguageSelected = { language ->
-                    when (state.languagePickerTarget) {
-                        TranslationTarget.About -> {
-                            onAction(DetailsAction.TranslateAbout(language.code))
-                        }
-
-                        TranslationTarget.WhatsNew -> {
-                            onAction(
-                                DetailsAction.TranslateWhatsNew(
-                                    language.code,
-                                ),
-                            )
-                        }
-
-                        null -> {}
-                    }
-                    onAction(DetailsAction.DismissLanguagePicker)
+    KomiScaffold(
+        topBar = {
+            KomiTopBar(
+                title = "",
+                leading = {
+                    KomiIconButton(
+                        icon = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = stringResource(Res.string.navigate_back),
+                        onClick = { onAction(DetailsAction.OnNavigateBackClick) },
+                    )
                 },
-                onDismiss = { onAction(DetailsAction.DismissLanguagePicker) },
-            )
-
-            if (state.isLoading) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularWavyProgressIndicator()
+                actions = {
+                    if (state.repository != null) {
+                        DetailsActions(state = state, onAction = onAction)
+                    }
                 }
-
-                return@Scaffold
-            }
-
-            if (state.errorMessage != null) {
-                ErrorState(state.errorMessage, onAction)
-
-                return@Scaffold
-            }
-
-            BoxWithConstraints(
+            )
+        },
+        toastState = toastState
+    ) { innerPadding ->
+        if (state.isLoading) {
+            Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
-                val collapsedSectionHeight = maxHeight * 0.7f
-                val listState = rememberLazyListState()
-                val isScrollbarEnabled = LocalScrollbarEnabled.current
+                KomiCircularProgress()
+            }
 
-                ScrollbarContainer(
-                    listState = listState,
-                    enabled = isScrollbarEnabled,
-                    modifier =
-                        Modifier
-                            .fillMaxHeight()
-                            .widthIn(max = 680.dp)
-                            .fillMaxWidth(),
+            return@KomiScaffold
+        }
+
+        if (state.errorMessage != null) {
+            ErrorState(state.errorMessage, onAction)
+
+            return@KomiScaffold
+        }
+
+        val density = LocalDensity.current
+        var containerHeightDp by remember { mutableStateOf(0.dp) }
+        val collapsedSectionHeight = containerHeightDp * 0.4f
+        val listState = rememberLazyListState()
+        val isScrollbarEnabled = LocalScrollbarEnabled.current
+        val contentWidthDp = contentWidthCap()
+        val pullEnabled = remember { isPullToRefreshSupported() }
+
+        val isDesktop = remember { isDesktop() }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .scrollable(
+                    state = listState,
+                    orientation = Orientation.Vertical,
+
+                    reverseDirection = true,
+                    enabled = isDesktop,
+                )
+                .onSizeChanged { size ->
+
+                    val newHeight = with(density) { size.height.toDp() }
+                    if (newHeight != containerHeightDp) containerHeightDp = newHeight
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            ScrollbarContainer(
+                listState = listState,
+                enabled = isScrollbarEnabled,
+                modifier =
+                    Modifier
+                        .fillMaxHeight()
+                        .widthIn(max = contentWidthDp)
+                        .fillMaxWidth(),
+            ) {
+                val listModifier =
+                    Modifier
+                        .fillMaxHeight()
+                        .widthIn(max = contentWidthDp)
+                        .fillMaxWidth()
+                        .arrowKeyScroll(listState, autoFocus = true)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type == KeyEventType.KeyDown &&
+                                (event.isMetaPressed || event.isCtrlPressed) &&
+                                event.key == Key.R
+                            ) {
+                                onAction(DetailsAction.Refresh)
+                                true
+                            } else {
+                                false
+                            }
+                        }.padding(innerPadding)
+
+                PullToRefreshHost(
+                    enabled = pullEnabled,
+                    isRefreshing = state.isRefreshing,
+                    onRefresh = { onAction(DetailsAction.Refresh) },
                 ) {
                     LazyColumn(
                         state = listState,
-                        modifier =
-                            Modifier
-                                .fillMaxHeight()
-                                .widthIn(max = 680.dp)
-                                .fillMaxWidth()
-                                .arrowKeyScroll(listState, autoFocus = true)
-                                .then(
-                                    if (state.isLiquidGlassEnabled) {
-                                        Modifier.liquefiable(liquidTopbarState)
-                                    } else {
-                                        Modifier
-                                    },
-                                ).padding(innerPadding),
+                        modifier = listModifier,
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(24.dp),
                     ) {
-                    header(
-                        state = state,
-                        onAction = onAction,
-                    )
-
-                    state.stats?.let { stats ->
-                        stats(
-                            isLiquidGlassEnabled = state.isLiquidGlassEnabled,
-                            repoStats = stats,
-                        )
-                    }
-
-                    if (state.isComingFromUpdate) {
-                        state.selectedRelease?.let { release ->
-                            whatsNew(
-                                release = release,
-                                isExpanded = state.isWhatsNewExpanded,
-                                isLiquidGlassEnabled = state.isLiquidGlassEnabled,
-                                onToggleExpanded = { onAction(DetailsAction.ToggleWhatsNewExpanded) },
-                                collapsedHeight = collapsedSectionHeight,
-                                translationState = state.whatsNewTranslation,
-                                onTranslateClick = {
-                                    onAction(DetailsAction.TranslateWhatsNew(state.deviceLanguageCode))
-                                },
-                                onLanguagePickerClick = {
-                                    onAction(DetailsAction.ShowLanguagePicker(TranslationTarget.WhatsNew))
-                                },
-                                onToggleTranslation = {
-                                    onAction(DetailsAction.ToggleWhatsNewTranslation)
-                                },
-                            )
-                        }
-
-                        state.readmeMarkdown?.let {
-                            about(
-                                readmeMarkdown = state.readmeMarkdown,
-                                readmeLanguage = state.readmeLanguage,
-                                isExpanded = state.isAboutExpanded,
-                                isLiquidGlassEnabled = state.isLiquidGlassEnabled,
-                                onToggleExpanded = { onAction(DetailsAction.ToggleAboutExpanded) },
-                                collapsedHeight = collapsedSectionHeight,
-                                translationState = state.aboutTranslation,
-                                onTranslateClick = {
-                                    onAction(DetailsAction.TranslateAbout(state.deviceLanguageCode))
-                                },
-                                onLanguagePickerClick = {
-                                    onAction(DetailsAction.ShowLanguagePicker(TranslationTarget.About))
-                                },
-                                onToggleTranslation = {
-                                    onAction(DetailsAction.ToggleAboutTranslation)
-                                },
-                            )
-                        }
-                    } else {
-                        state.readmeMarkdown?.let {
-                            about(
-                                readmeMarkdown = state.readmeMarkdown,
-                                readmeLanguage = state.readmeLanguage,
-                                isExpanded = state.isAboutExpanded,
-                                isLiquidGlassEnabled = state.isLiquidGlassEnabled,
-                                onToggleExpanded = { onAction(DetailsAction.ToggleAboutExpanded) },
-                                collapsedHeight = collapsedSectionHeight,
-                                translationState = state.aboutTranslation,
-                                onTranslateClick = {
-                                    onAction(DetailsAction.TranslateAbout(state.deviceLanguageCode))
-                                },
-                                onLanguagePickerClick = {
-                                    onAction(DetailsAction.ShowLanguagePicker(TranslationTarget.About))
-                                },
-                                onToggleTranslation = {
-                                    onAction(DetailsAction.ToggleAboutTranslation)
-                                },
-                            )
-                        }
-
-                        state.selectedRelease?.let { release ->
-                            whatsNew(
-                                release = release,
-                                isExpanded = state.isWhatsNewExpanded,
-                                isLiquidGlassEnabled = state.isLiquidGlassEnabled,
-                                onToggleExpanded = { onAction(DetailsAction.ToggleWhatsNewExpanded) },
-                                collapsedHeight = collapsedSectionHeight,
-                                translationState = state.whatsNewTranslation,
-                                onTranslateClick = {
-                                    onAction(DetailsAction.TranslateWhatsNew(state.deviceLanguageCode))
-                                },
-                                onLanguagePickerClick = {
-                                    onAction(DetailsAction.ShowLanguagePicker(TranslationTarget.WhatsNew))
-                                },
-                                onToggleTranslation = {
-                                    onAction(DetailsAction.ToggleWhatsNewTranslation)
-                                },
-                            )
-                        }
-                    }
-
-                    state.repository?.let { repository ->
-                        reportIssue(
-                            repoUrl = repository.htmlUrl,
-                        )
-                    }
-
-                    state.userProfile?.let { userProfile ->
-                        author(
-                            isLiquidGlassEnabled = state.isLiquidGlassEnabled,
-                            author = userProfile,
+                        header(
+                            state = state,
                             onAction = onAction,
                         )
-                    }
 
-                    if (state.installLogs.isNotEmpty()) {
-                        logs(state)
-                    }
+                        state.stats?.let { stats ->
+                            stats(
+                                repoStats = stats,
+                            )
+                        }
+
+                        releaseChannel(
+                            state = state,
+                            onAction = onAction,
+                        )
+
+                        if (onOpenIssues != null || onOpenSecurity != null) {
+                            item(key = "repo_pages_actions") {
+                                RepoPagesActionRow(
+                                    onOpenIssues = onOpenIssues,
+                                    onOpenSecurity = onOpenSecurity,
+                                )
+                            }
+                        }
+
+                        state.selectedRelease?.let { release ->
+                            whatsNew(
+                                release = release,
+                                isExpanded = state.isWhatsNewExpanded,
+                                onToggleExpanded = { onAction(DetailsAction.ToggleWhatsNewExpanded) },
+                                collapsedHeight = collapsedSectionHeight,
+                                measuredHeightPx = state.whatsNewMeasuredHeightPx,
+                                onMeasured = { onAction(DetailsAction.OnWhatsNewMeasured(it)) },
+                                onReadMore = onReadMoreWhatsNew,
+                            )
+                        }
+
+                        state.readmeMarkdown?.let {
+                            about(
+                                readmeMarkdown = state.readmeMarkdown,
+                                readmeLanguage = state.readmeLanguage,
+                                onTranslateLanguage = onTranslateLanguage,
+                            )
+                        }
+
+
+                        if (state.installLogs.isNotEmpty()) {
+                            logs(state)
+                        }
                     }
                 }
             }
@@ -558,182 +604,170 @@ fun DetailsScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun DetailsTopbar(
+private fun PullToRefreshHost(
+    enabled: Boolean,
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    if (enabled) {
+        KomiPullToRefresh(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            content()
+        }
+    } else {
+        content()
+    }
+}
+
+@OptIn(ExperimentalTime::class)
+@Composable
+private fun DetailsActions(
     state: DetailsState,
     onAction: (DetailsAction) -> Unit,
-    liquidTopbarState: LiquidState,
 ) {
-    TopAppBar(
-        title = { },
-        navigationIcon = {
-            IconButton(
-                shapes = IconButtonDefaults.shapes(),
+    val cooldownUntilMs = state.refreshCooldownUntilEpochMs
+    var nowMs by remember { mutableLongStateOf(Clock.System.now().toEpochMilliseconds()) }
+
+    LaunchedEffect(cooldownUntilMs) {
+        if (cooldownUntilMs == null) return@LaunchedEffect
+        while (Clock.System.now().toEpochMilliseconds() < cooldownUntilMs) {
+            nowMs = Clock.System.now().toEpochMilliseconds()
+            delay(500L.milliseconds)
+        }
+        nowMs = Clock.System.now().toEpochMilliseconds()
+    }
+
+    val cooldownSeconds = cooldownUntilMs?.let { until ->
+        ((until - nowMs + 999) / 1000).coerceAtLeast(0L).toInt()
+    } ?: 0
+    val cooldownActive = cooldownSeconds > 0
+    val refreshDisabled = cooldownActive || state.isRefreshing
+
+    val openLabel = stringResource(Res.string.open_repository)
+    val starLabel = stringResource(
+        if (state.isStarred) Res.string.repository_starred else Res.string.repository_not_starred,
+    )
+    val favouriteLabel = stringResource(
+        if (state.isFavourite) Res.string.remove_from_favourites else Res.string.add_to_favourites,
+    )
+    val shareLabel = stringResource(Res.string.share_repository)
+    val refreshLabel = if (cooldownActive) {
+        stringResource(Res.string.details_refresh_cooldown, cooldownSeconds)
+    } else {
+        stringResource(Res.string.details_refresh)
+    }
+
+    val items = buildList {
+        add(
+            KomiActionRowItem(
+                icon = Icons.Default.OpenInBrowser,
+                title = openLabel,
                 onClick = {
-                    onAction(DetailsAction.OnNavigateBackClick)
+                    onAction(DetailsAction.OpenRepoInBrowser)
                 },
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = stringResource(Res.string.navigate_back),
-                    modifier = Modifier.size(24.dp),
-                )
-            }
-        },
-        actions = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (state.repository != null) {
-                    IconButton(
-                        onClick = {
-                            onAction(
-                                DetailsAction.OnMessage(
-                                    messageText =
-                                        if (state.isStarred) {
-                                            Res.string.unstar_from_github
-                                        } else {
-                                            Res.string.star_from_github
-                                        },
-                                ),
-                            )
-                        },
-                        shapes = IconButtonDefaults.shapes(),
-                        colors =
-                            IconButtonDefaults.iconButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onSurface,
-                            ),
-                    ) {
-                        Icon(
-                            imageVector =
-                                if (state.isStarred) {
-                                    Icons.Default.Star
-                                } else {
-                                    Icons.Default.StarBorder
-                                },
-                            contentDescription =
-                                stringResource(
-                                    resource =
-                                        if (state.isStarred) {
-                                            Res.string.repository_starred
-                                        } else {
-                                            Res.string.repository_not_starred
-                                        },
-                                ),
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            onAction(DetailsAction.OnToggleFavorite)
-                        },
-                        shapes = IconButtonDefaults.shapes(),
-                        colors =
-                            IconButtonDefaults.iconButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onSurface,
-                            ),
-                    ) {
-                        Icon(
-                            imageVector =
-                                if (state.isFavourite) {
-                                    Icons.Default.Favorite
-                                } else {
-                                    Icons.Default.FavoriteBorder
-                                },
-                            contentDescription =
-                                stringResource(
-                                    resource =
-                                        if (state.isFavourite) {
-                                            Res.string.remove_from_favourites
-                                        } else {
-                                            Res.string.add_to_favourites
-                                        },
-                                ),
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            onAction(DetailsAction.OnShareClick)
-                        },
-                        shapes = IconButtonDefaults.shapes(),
-                        colors =
-                            IconButtonDefaults.iconButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onSurface,
-                            ),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = stringResource(Res.string.share_repository),
-                        )
-                    }
-                }
-
-                state.repository?.htmlUrl?.let {
-                    IconButton(
-                        shapes = IconButtonDefaults.shapes(),
-                        onClick = {
-                            onAction(DetailsAction.OpenRepoInBrowser)
-                        },
-                        colors =
-                            IconButtonDefaults.iconButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onSurface,
-                            ),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.OpenInBrowser,
-                            contentDescription = stringResource(Res.string.open_repository),
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
-                }
-            }
-        },
-        colors =
-            TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Transparent,
             ),
-        modifier =
-            Modifier
-                .shadow(
-                    elevation = 6.dp,
-                    ambientColor = MaterialTheme.colorScheme.surfaceTint,
-                    spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
-                ).background(
-                    Brush.linearGradient(
-                        0f to MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-                        0.5f to MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                        1f to MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                    ),
-                ).then(
-                    if (state.isLiquidGlassEnabled && isLiquidFrostAvailable()) {
-                        Modifier.liquid(liquidTopbarState) {
-                            this.shape = CutCornerShape(0.dp)
-                            this.frost = 5.dp
-                            this.curve = .25f
-                            this.refraction = .05f
-                            this.dispersion = .1f
-                        }
-                    } else {
-                        Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest)
+        )
+        add(
+            KomiActionRowItem(
+                icon = if (state.isStarred) Icons.Default.Star else Icons.Default.StarBorder,
+                title = starLabel,
+                onClick = {
+                    onAction(DetailsAction.OnToggleStar)
+                },
+            ),
+        )
+        add(
+            KomiActionRowItem(
+                icon = if (state.isFavourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                title = favouriteLabel,
+                onClick = {
+                    onAction(DetailsAction.OnToggleFavorite)
+                },
+            ),
+        )
+        if (state.repository?.htmlUrl != null) {
+            add(
+                KomiActionRowItem(
+                    icon = Icons.Default.Share,
+                    title = shareLabel,
+                    onClick = {
+                        onAction(DetailsAction.OnShareClick)
                     },
                 ),
-    )
+            )
+        }
+        add(
+            KomiActionRowItem(
+                icon = Icons.Default.Refresh,
+                title = refreshLabel,
+                onClick = {
+                    onAction(DetailsAction.Refresh)
+                },
+                enabled = !refreshDisabled,
+            ),
+        )
+        if (state.installedApp?.installSource == InstallSource.MANUAL) {
+            add(
+                KomiActionRowItem(
+                    icon = Icons.Default.LinkOff,
+                    title = stringResource(Res.string.details_unlink_external_app_menu),
+                    onClick = {
+                        onAction(DetailsAction.OnUnlinkExternalApp)
+                    },
+                ),
+            )
+        }
+    }.toImmutableList()
+
+    KomiActionRow(items = items, maxVisible = 1)
 }
 
 @Preview
 @Composable
 private fun Preview() {
-    GithubStoreTheme {
+    PersonalityPreview {
         DetailsScreen(
             state =
                 DetailsState(
                     isLoading = false,
                 ),
             onAction = {},
-            snackbarHostState = SnackbarHostState(),
+            toastState = KomiToastState(),
         )
+    }
+}
+
+@Composable
+private fun RepoPagesActionRow(
+    onOpenIssues: (() -> Unit)?,
+    onOpenSecurity: (() -> Unit)?,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        onOpenIssues?.let { open ->
+            KomiButton(
+                onClick = open,
+                label = stringResource(Res.string.repo_pages_details_issues_button),
+                variant = KomiButtonVariant.Tonal,
+                size = KomiButtonSize.Sm,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        onOpenSecurity?.let { open ->
+            KomiButton(
+                onClick = open,
+                label = stringResource(Res.string.repo_pages_details_security_button),
+                variant = KomiButtonVariant.Tonal,
+                size = KomiButtonSize.Sm,
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }

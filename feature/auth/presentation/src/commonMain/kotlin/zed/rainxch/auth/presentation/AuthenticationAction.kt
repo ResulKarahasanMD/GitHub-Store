@@ -27,7 +27,6 @@ sealed interface AuthenticationAction {
 
     data object OnResumed : AuthenticationAction
 
-    // PAT paste flow
     data object OpenPatSheet : AuthenticationAction
 
     data object DismissPatSheet : AuthenticationAction
@@ -39,4 +38,20 @@ sealed interface AuthenticationAction {
     data object SubmitPat : AuthenticationAction
 
     data object OpenPatSettingsPage : AuthenticationAction
+
+    data object StartWebAuth : AuthenticationAction
+
+    data class ConsumeAuthHandoff(
+        val handoffId: String,
+        val state: String,
+    ) : AuthenticationAction
+
+    data class ConsumeAuthError(
+        val reason: String,
+        val state: String,
+    ) : AuthenticationAction
+
+    data object DismissAdvancedAuth : AuthenticationAction
+
+    data object OpenAdvancedAuth : AuthenticationAction
 }

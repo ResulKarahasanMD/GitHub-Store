@@ -1,55 +1,49 @@
-# CLAUDE.md - Search Feature
+# Search Feature
 
-## Purpose
+Repo search with platform / language / sort filters. Paginated results.
 
-Repository search with advanced filters. Users can search GitHub repositories by query and filter by platform (Android, Windows, macOS, Linux), programming language, and sort order. Supports paginated results.
-
-## Module Structure
+## Structure
 
 ```
 feature/search/
-├── domain/
-│   ├── model/
-│   │   ├── SearchPlatform.kt         # All, Android, Windows, macOS, Linux
-│   │   ├── ProgrammingLanguage.kt    # Language filter options
-│   │   └── SortBy.kt                 # Sort options (stars, updated, etc.)
-│   └── repository/SearchRepository.kt  # Filtered, paginated search
-├── data/
-│   ├── di/SharedModule.kt            # Koin: searchModule
-│   ├── repository/SearchRepositoryImpl.kt  # GitHub search API integration
-│   ├── dto/                           # Network DTOs
-│   └── mappers/                       # DTO → domain model mappers
+├── domain/   # SearchRepository; SearchPlatform (All/Android/Macos/Windows/Linux), ProgrammingLanguage, SortBy
+├── data/     # SearchRepositoryImpl + dto + mappers + di
 └── presentation/
-    ├── SearchViewModel.kt             # Search state, filter management, pagination
-    ├── SearchState.kt                 # query, results, filters, loading state
-    ├── SearchAction.kt                # Search, filter changes, load more, clicks
-    ├── SearchEvent.kt                 # One-off events
-    ├── SearchRoot.kt                  # Main composable with search bar + filter dropdowns
-    └── components/                    # Filter UI components
+    ├── SearchViewModel / State / Action / Event / Root
+    └── components/  filter chips, ClipboardLinkBanner, etc.
 ```
 
-## Key Interfaces
+## Key interface
 
 ```kotlin
 interface SearchRepository {
     fun searchRepositories(
         query: String,
-        searchPlatform: SearchPlatform,
+        platform: DiscoveryPlatform,
         language: ProgrammingLanguage,
         sortBy: SortBy,
-        page: Int
+        sortOrder: SortOrder,
+        page: Int,
+        source: SearchSource = SearchSource.GitHub,
     ): Flow<PaginatedDiscoveryRepositories>
+
+    suspend fun exploreFromGithub(query, platform, page): ExploreResult
 }
+
+sealed interface SearchSource { object GitHub; data class Forgejo(host); /* Codeberg = Forgejo("codeberg.org") */ }
 ```
 
 ## Navigation
 
-Route: `GithubStoreGraph.SearchScreen` (data object, no params)
+`GithubStoreGraph.SearchScreen`.
 
-## Implementation Notes
+## Notes
 
-- Platform filter maps to GitHub topic searches (e.g., `android` topic for Android platform)
-- Language filter maps to GitHub's `language:` qualifier
-- Search results use the same `PaginatedDiscoveryRepositories` model as home feature
-- Debounce/throttle applied to search queries to avoid excessive API calls
-- Integrates with favourites and starred status from core repositories
+- Platform filter → GitHub topic search (e.g. `android` topic). Language filter → `language:` qualifier. Debounce/throttle on queries.
+- **Source toggle (`SearchSourceUi`):** UI surfaces `GitHub`, `Codeberg`, and per-user-added `Custom(host)` chips (from `TweaksRepository.customForgeHosts`). `state.selectedSource` → repository's `source: SearchSource` param. Forgejo branch in `SearchRepositoryImpl` hits `ForgejoClientRegistry.clientFor(host)` (`/repos/search`) — no backend mediator.
+- Injects: `SearchRepository`, `InstalledAppsRepository`, `SyncInstalledAppsUseCase`, `FavouritesRepository`, `StarredRepository`, `SeenReposRepository`, `HiddenReposRepository`, `TweaksRepository`, `ProfileRepository`, `TelemetryRepository`, `SearchHistoryRepository`, `ShareManager`, `ClipboardHelper`, `Platform`, `GitHubStoreLogger`. Data layer additionally injects `ForgejoClientRegistry`.
+- `computeVisibleRepos` filters `state.repositories` at render time by `hiddenRepoIds` AND (when `isHideSeenEnabled`) `seenRepoIds`. Unhide restores without re-fetch.
+- Empty-grid-after-Hide-seen banner offers one-tap reset (issue #574) → `OnDisableHideSeenForResults`.
+- Long-press card → shared `RepositoryActionsBottomSheet`.
+- `DiscoveryRepositoryUi.isCurrentUserOwner` flipped by `observeCurrentUser` (E20).
+- Clipboard auto-detect surfaces GitHub URLs from clipboard as a dismissible banner.

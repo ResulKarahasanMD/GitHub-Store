@@ -4,4 +4,6 @@ enum class SortByUi {
     MostStars,
     MostForks,
     BestMatch,
+    RecentlyUpdated,
+    RecentlyReleased,
 }

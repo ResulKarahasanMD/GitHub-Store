@@ -1,48 +1,58 @@
 package zed.rainxch.devprofile.presentation.components
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialShapes
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SecondaryScrollableTabRow
-import androidx.compose.material3.Tab
-import androidx.compose.material3.Text
-import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.collections.immutable.toImmutableList
 import org.jetbrains.compose.resources.stringResource
+import zed.rainxch.core.presentation.components.icon.KomiIcon
+import zed.rainxch.core.presentation.components.inputs.KomiTextField
+import zed.rainxch.core.presentation.components.overlays.KomiDropdown
+import zed.rainxch.core.presentation.components.overlays.KomiMenuItem
+import zed.rainxch.core.presentation.components.text.KomiText
+import zed.rainxch.core.presentation.components.text.KomiTextRole
+import zed.rainxch.core.presentation.locals.LocalPersonality
 import zed.rainxch.devprofile.domain.model.RepoFilterType
 import zed.rainxch.devprofile.domain.model.RepoSortType
 import zed.rainxch.devprofile.presentation.DeveloperProfileAction
-import zed.rainxch.githubstore.core.presentation.res.*
+import zed.rainxch.githubstore.core.presentation.res.Res
+import zed.rainxch.githubstore.core.presentation.res.clear_search
+import zed.rainxch.githubstore.core.presentation.res.filter_favorites
+import zed.rainxch.githubstore.core.presentation.res.filter_installed
+import zed.rainxch.githubstore.core.presentation.res.filter_with_installable
+import zed.rainxch.githubstore.core.presentation.res.filter_with_releases
+import zed.rainxch.githubstore.core.presentation.res.repositories
+import zed.rainxch.githubstore.core.presentation.res.repository_singular
+import zed.rainxch.githubstore.core.presentation.res.search_repositories
+import zed.rainxch.githubstore.core.presentation.res.showing_x_of_y_repositories
+import zed.rainxch.githubstore.core.presentation.res.sort
+import zed.rainxch.githubstore.core.presentation.res.sort_most_stars
+import zed.rainxch.githubstore.core.presentation.res.sort_name
+import zed.rainxch.githubstore.core.presentation.res.sort_recently_updated
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun FilterSortControls(
     currentFilter: RepoFilterType,
@@ -52,37 +62,25 @@ fun FilterSortControls(
     totalCount: Int,
     onAction: (DeveloperProfileAction) -> Unit,
 ) {
+    val colors = LocalPersonality.current.colors
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        OutlinedTextField(
+        KomiTextField(
             value = searchQuery,
-            onValueChange = { query ->
-                onAction(DeveloperProfileAction.OnSearchQueryChange(query))
-            },
+            onValueChange = { onAction(DeveloperProfileAction.OnSearchQueryChange(it)) },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = {
-                Text(
-                    text = stringResource(Res.string.search_repositories),
-                    maxLines = 1,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            },
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.Default.Search,
-                    contentDescription = stringResource(Res.string.search_repositories),
-                    modifier = Modifier.size(20.dp),
-                )
-            },
-            trailingIcon = {
+            placeholder = stringResource(Res.string.search_repositories),
+            leadingIcon = Icons.Default.Search,
+            trailing = {
                 if (searchQuery.isNotBlank()) {
-                    IconButton(
-                        onClick = { onAction(DeveloperProfileAction.OnSearchQueryChange("")) },
+                    Box(
+                        modifier = Modifier
+                            .clickable { onAction(DeveloperProfileAction.OnSearchQueryChange("")) },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Icon(
+                        KomiIcon(
                             imageVector = Icons.Default.Close,
                             contentDescription = stringResource(Res.string.clear_search),
                             modifier = Modifier.size(20.dp),
@@ -90,167 +88,141 @@ fun FilterSortControls(
                     }
                 }
             },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
         )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            SecondaryScrollableTabRow(
-                selectedTabIndex = currentFilter.ordinal,
-                modifier = Modifier.weight(1f),
-                edgePadding = 0.dp,
-                divider = {},
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 RepoFilterType.entries.forEach { filter ->
-                    FilterChipTab(
-                        selected = currentFilter == filter,
+                    FilterPill(
+                        label = when (filter) {
+                            RepoFilterType.WITH_RELEASES -> stringResource(Res.string.filter_with_releases)
+                            RepoFilterType.WITH_INSTALLABLE -> stringResource(Res.string.filter_with_installable)
+                            RepoFilterType.INSTALLED -> stringResource(Res.string.filter_installed)
+                            RepoFilterType.FAVORITES -> stringResource(Res.string.filter_favorites)
+                        },
+                        isSelected = currentFilter == filter,
                         onClick = { onAction(DeveloperProfileAction.OnFilterChange(filter)) },
-                        label = filter.displayName(),
                     )
                 }
             }
 
-            SortMenu(
+            SortButton(
                 currentSort = currentSort,
-                onSortChange = { sort ->
-                    onAction(DeveloperProfileAction.OnSortChange(sort))
-                },
+                onSortChange = { onAction(DeveloperProfileAction.OnSortChange(it)) },
             )
         }
 
-        Text(
-            text =
-                if (repoCount == totalCount) {
-                    "$repoCount ${
-                        stringResource(
-                            if (repoCount == 1) {
-                                Res.string.repository_singular
-                            } else {
-                                Res.string.repositories
-                            },
-                        )
-                    }"
-                } else {
-                    stringResource(
-                        resource = Res.string.showing_x_of_y_repositories,
-                        repoCount,
-                        totalCount,
-                    )
-                },
+        KomiText(
+            text = if (repoCount == totalCount) {
+                "$repoCount ${stringResource(
+                    if (repoCount == 1) Res.string.repository_singular else Res.string.repositories,
+                )}"
+            } else {
+                stringResource(Res.string.showing_x_of_y_repositories, repoCount, totalCount)
+            },
             maxLines = 1,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            role = KomiTextRole.Body,
+            fontSize = 13.sp,
+            color = colors.onSurfaceVariant,
+            uppercase = false,
         )
     }
 }
 
 @Composable
-private fun FilterChipTab(
-    selected: Boolean,
-    onClick: () -> Unit,
+private fun FilterPill(
     label: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
 ) {
-    Tab(
-        selected = selected,
-        onClick = onClick,
-        modifier = Modifier.height(40.dp),
+    val colors = LocalPersonality.current.colors
+    val container by animateColorAsState(
+        targetValue = if (isSelected) {
+            colors.primary
+        } else {
+            colors.surfaceContainerHigh
+        },
+        animationSpec = tween(durationMillis = 180),
+        label = "filter_container",
+    )
+    val content by animateColorAsState(
+        targetValue = if (isSelected) {
+            colors.onPrimary
+        } else {
+            colors.onSurface
+        },
+        animationSpec = tween(durationMillis = 180),
+        label = "filter_content",
+    )
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(LocalPersonality.current.shape.cornerSmall))
+            .background(container)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
+        KomiText(
             text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color =
-                if (selected) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
+            role = KomiTextRole.Label,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = content,
+            maxLines = 1,
+            uppercase = false,
         )
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun SortMenu(
+private fun SortButton(
     currentSort: RepoSortType,
     onSortChange: (RepoSortType) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Box {
-        FilledIconButton(
-            onClick = { expanded = true },
-            modifier = Modifier.size(40.dp),
-            shape = MaterialShapes.Cookie9Sided.toShape(),
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.Sort,
-                contentDescription = stringResource(Res.string.sort),
-                modifier = Modifier.size(20.dp),
-            )
-        }
-
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            shape = RoundedCornerShape(32.dp),
-        ) {
-            RepoSortType.entries.forEach { sort ->
-                DropdownMenuItem(
-                    text = {
-                        Row(
-                            modifier = Modifier.padding(4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (currentSort == sort) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp),
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            } else {
-                                Spacer(modifier = Modifier.size(18.dp))
-                            }
-
-                            Text(
-                                text = sort.displayName(),
-                                maxLines = 1,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color =
-                                    if (currentSort == sort) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    },
-                            )
-                        }
-                    },
-                    onClick = {
-                        onSortChange(sort)
-                        expanded = false
+    val colors = LocalPersonality.current.colors
+    KomiDropdown(
+        entries = RepoSortType.entries
+            .map { sort ->
+                KomiMenuItem(
+                    id = sort.name,
+                    label = when (sort) {
+                        RepoSortType.UPDATED -> stringResource(Res.string.sort_recently_updated)
+                        RepoSortType.STARS -> stringResource(Res.string.sort_most_stars)
+                        RepoSortType.NAME -> stringResource(Res.string.sort_name)
                     },
                 )
             }
-        }
-    }
+            .toImmutableList(),
+        onSelect = { item ->
+            RepoSortType.entries.firstOrNull { it.name == item.id }?.let(onSortChange)
+        },
+        value = currentSort.name,
+        trigger = { onClick ->
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(LocalPersonality.current.shape.cornerSmall))
+                    .background(colors.surfaceContainerHigh)
+                    .clickable { onClick() },
+                contentAlignment = Alignment.Center,
+            ) {
+                KomiIcon(
+                    imageVector = Icons.AutoMirrored.Filled.Sort,
+                    contentDescription = stringResource(Res.string.sort),
+                    modifier = Modifier.size(18.dp),
+                    tint = colors.onSurface,
+                )
+            }
+        },
+    )
 }
-
-@Composable
-private fun RepoFilterType.displayName(): String =
-    when (this) {
-        RepoFilterType.WITH_RELEASES -> stringResource(Res.string.filter_with_releases)
-        RepoFilterType.INSTALLED -> stringResource(Res.string.filter_installed)
-        RepoFilterType.FAVORITES -> stringResource(Res.string.filter_favorites)
-    }
-
-@Composable
-private fun RepoSortType.displayName(): String =
-    when (this) {
-        RepoSortType.UPDATED -> stringResource(Res.string.sort_recently_updated)
-        RepoSortType.STARS -> stringResource(Res.string.sort_most_stars)
-        RepoSortType.NAME -> stringResource(Res.string.sort_name)
-    }

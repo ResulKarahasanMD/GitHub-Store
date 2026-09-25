@@ -8,9 +8,12 @@ import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.contentLength
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -29,22 +32,22 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import zed.rainxch.core.data.data_source.TokenStore
+import zed.rainxch.core.data.dto.AnnouncementsResponseDto
 import zed.rainxch.core.data.dto.BackendExploreResponse
+import zed.rainxch.core.data.dto.BackendFeedResponse
 import zed.rainxch.core.data.dto.BackendRepoResponse
 import zed.rainxch.core.data.dto.BackendSearchResponse
-import zed.rainxch.core.data.dto.EventRequest
+import zed.rainxch.core.data.dto.ExternalMatchRequest
+import zed.rainxch.core.data.dto.ExternalMatchResponse
 import zed.rainxch.core.data.dto.GithubReadmeResponseDto
+import zed.rainxch.core.data.dto.GithubRepoNetworkModel
+import zed.rainxch.core.data.dto.MirrorListResponse
 import zed.rainxch.core.data.dto.ReleaseNetwork
+import zed.rainxch.core.data.dto.SigningFingerprintSeedResponse
 import zed.rainxch.core.data.dto.UserProfileNetwork
-import zed.rainxch.core.domain.model.ProxyConfig
+import zed.rainxch.core.domain.model.settings.ProxyConfig
 import kotlin.coroutines.cancellation.CancellationException
 
-/**
- * Client for GitHub Store's own backend (trending/popular/search).
- * Treated as *discovery* traffic — routes through the discovery-scope
- * proxy so users configuring a proxy for GitHub browsing also have
- * their backend discovery requests proxied consistently.
- */
 class BackendApiClient(
     proxyConfigFlow: StateFlow<ProxyConfig>,
     private val tokenStore: TokenStore,
@@ -77,6 +80,11 @@ class BackendApiClient(
                 connectTimeoutMillis = 3_000
                 socketTimeoutMillis = 5_000
             }
+            install(io.ktor.client.plugins.observer.ResponseObserver) {
+                onResponse { response ->
+                    BackendRateLimitTracker.record(response)
+                }
+            }
             defaultRequest {
                 url(BASE_URL)
             }
@@ -91,20 +99,20 @@ class BackendApiClient(
     suspend fun getCategory(category: String, platform: String): Result<List<BackendRepoResponse>> =
         safeCall {
             val response = httpClient.get("categories/$category/$platform")
-            if (response.status.isSuccess()) {
-                Result.success(response.body())
-            } else {
-                Result.failure(BackendException(response.status.value))
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
             }
         }
 
     suspend fun getTopic(bucket: String, platform: String): Result<List<BackendRepoResponse>> =
         safeCall {
             val response = httpClient.get("topics/$bucket/$platform")
-            if (response.status.isSuccess()) {
-                Result.success(response.body())
-            } else {
-                Result.failure(BackendException(response.status.value))
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
             }
         }
 
@@ -125,10 +133,32 @@ class BackendApiClient(
                 parameter("offset", offset)
                 if (token != null) header(X_GITHUB_TOKEN_HEADER, token)
             }
-            if (response.status.isSuccess()) {
-                Result.success(response.body())
-            } else {
-                Result.failure(BackendException(response.status.value))
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
+            }
+        }
+
+    suspend fun getFeed(
+        platform: String?,
+        page: Int = 1,
+        limit: Int = 20,
+    ): Result<BackendFeedResponse> =
+        safeCall {
+            val response = httpClient.get("feed") {
+                if (platform != null) parameter("platform", platform)
+                parameter("page", page)
+                parameter("limit", limit)
+                timeout {
+                    requestTimeoutMillis = 30_000
+                    socketTimeoutMillis = 30_000
+                }
+            }
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
             }
         }
 
@@ -151,10 +181,10 @@ class BackendApiClient(
 
                 if (token != null) header(X_GITHUB_TOKEN_HEADER, token)
             }
-            if (response.status.isSuccess()) {
-                Result.success(response.body())
-            } else {
-                Result.failure(BackendException(response.status.value))
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
             }
         }
 
@@ -172,10 +202,29 @@ class BackendApiClient(
             val response = httpClient.get("repo/$owner/$name") {
                 if (token != null) header(X_GITHUB_TOKEN_HEADER, token)
             }
-            if (response.status.isSuccess()) {
-                Result.success(response.body())
-            } else {
-                Result.failure(BackendException(response.status.value))
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
+            }
+        }
+
+    suspend fun refreshRepo(owner: String, name: String): Result<BackendRepoResponse> =
+        safeCall {
+            val token = currentUserGithubToken()
+            val response = httpClient.post("repo/$owner/$name/refresh") {
+                if (token != null) header(X_GITHUB_TOKEN_HEADER, token)
+                timeout {
+                    requestTimeoutMillis = 15_000
+                    socketTimeoutMillis = 15_000
+                }
+            }
+            when (response.status.value) {
+                in 200..299 -> Result.success(response.body())
+                429 -> Result.failure(parseRefresh429(response))
+                404 -> Result.failure(RepoNotFoundException())
+                410 -> Result.failure(RepoArchivedException())
+                else -> Result.failure(BackendException(response.status.value))
             }
         }
 
@@ -191,16 +240,15 @@ class BackendApiClient(
                 parameter("page", page)
                 parameter("per_page", perPage)
                 if (token != null) header(X_GITHUB_TOKEN_HEADER, token)
-                // Cold path: backend goes to GitHub + paginates. 15s covers p99.
                 timeout {
                     requestTimeoutMillis = 15_000
                     socketTimeoutMillis = 15_000
                 }
             }
-            if (response.status.isSuccess()) {
-                Result.success(response.body())
-            } else {
-                Result.failure(BackendException(response.status.value))
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
             }
         }
 
@@ -217,10 +265,37 @@ class BackendApiClient(
                     socketTimeoutMillis = 15_000
                 }
             }
-            if (response.status.isSuccess()) {
-                Result.success(response.body())
-            } else {
-                Result.failure(BackendException(response.status.value))
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
+            }
+        }
+
+    suspend fun getUserRepos(
+        username: String,
+        page: Int = 1,
+        perPage: Int = 30,
+        sort: String? = "updated",
+        type: String? = null,
+    ): Result<List<GithubRepoNetworkModel>> =
+        safeCall {
+            val token = currentUserGithubToken()
+            val response = httpClient.get("users/$username/repos") {
+                parameter("page", page)
+                parameter("per_page", perPage)
+                if (sort != null) parameter("sort", sort)
+                if (type != null) parameter("type", type)
+                if (token != null) header(X_GITHUB_TOKEN_HEADER, token)
+                timeout {
+                    requestTimeoutMillis = 15_000
+                    socketTimeoutMillis = 15_000
+                }
+            }
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
             }
         }
 
@@ -234,27 +309,141 @@ class BackendApiClient(
                     socketTimeoutMillis = 15_000
                 }
             }
-            if (response.status.isSuccess()) {
-                Result.success(response.body())
-            } else {
-                Result.failure(BackendException(response.status.value))
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
             }
         }
 
-    suspend fun postEvents(events: List<EventRequest>): Result<Unit> =
+    suspend fun postExternalMatch(body: ExternalMatchRequest): Result<ExternalMatchResponse> =
         safeCall {
-            val response = httpClient.post("events") {
+            val response = httpClient.post("external-match") {
                 contentType(ContentType.Application.Json)
-                setBody(events)
+                setBody(body)
             }
             when {
-                response.status == HttpStatusCode.NoContent || response.status.isSuccess() ->
-                    Result.success(Unit)
+                response.status.isSuccess() ->
+                    Result.success(response.body())
                 response.status == HttpStatusCode.TooManyRequests ->
                     Result.failure(RateLimitedException())
                 else ->
                     Result.failure(BackendException(response.status.value))
             }
+        }
+
+    suspend fun getSigningSeeds(
+        since: Long? = null,
+        cursor: String? = null,
+        platform: String = "android",
+    ): Result<SigningFingerprintSeedResponse> =
+        safeCall {
+            val response = httpClient.get("signing-seeds") {
+                parameter("platform", platform)
+                if (since != null) parameter("since", since)
+                if (cursor != null) parameter("cursor", cursor)
+            }
+            when {
+                response.status.isSuccess() ->
+                    Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests ->
+                    Result.failure(RateLimitedException())
+                else ->
+                    Result.failure(BackendException(response.status.value))
+            }
+        }
+
+    suspend fun getMirrorList(): Result<MirrorListResponse> =
+        safeCall {
+            val response = httpClient.get("mirrors/list")
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
+            }
+        }
+
+    suspend fun getAnnouncements(): Result<AnnouncementsResponseDto> =
+        safeCall {
+            val response = httpClient.get("announcements")
+            when {
+                response.status.isSuccess() -> Result.success(response.body())
+                response.status == HttpStatusCode.TooManyRequests -> Result.failure(buildRateLimited(response))
+                else -> Result.failure(BackendException(response.status.value))
+            }
+        }
+
+    private suspend fun buildRateLimited(response: io.ktor.client.statement.HttpResponse): RateLimitedException {
+        BackendRateLimitTracker.record(response)
+        val headerRetryAfter = response.headers["Retry-After"]?.toLongOrNull()
+        val resetEpoch = response.headers["X-RateLimit-Reset"]?.toLongOrNull()
+        val limit = response.headers["X-RateLimit-Limit"]?.toIntOrNull()
+        val bodyRetryAfter = parseRateLimitBody(response)
+        val effectiveRetryAfter = bodyRetryAfter ?: headerRetryAfter
+        return RateLimitedException(
+            retryAfterSeconds = effectiveRetryAfter,
+            resetEpochSeconds = resetEpoch,
+            limit = limit,
+        )
+    }
+
+    private suspend fun parseRateLimitBody(response: io.ktor.client.statement.HttpResponse): Long? {
+        val contentLength = response.contentLength() ?: 0L
+        if (contentLength == 0L) return null
+        return try {
+            val text = response.bodyAsText()
+            if (text.isBlank()) return null
+            val element = Json.parseToJsonElement(text)
+            val obj = element as? kotlinx.serialization.json.JsonObject ?: return null
+            obj["retry_after"]?.let { node ->
+                node as? kotlinx.serialization.json.JsonPrimitive
+            }?.contentOrNull?.toLongOrNull()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun parseRefresh429(response: io.ktor.client.statement.HttpResponse): Exception {
+        val headerRetryAfter = response.headers["Retry-After"]?.toLongOrNull()
+        val (errorTag, bodyRetryAfter) = parseRefreshErrorBody(response)
+        val retryAfter = bodyRetryAfter ?: headerRetryAfter ?: DEFAULT_REFRESH_COOLDOWN_SECONDS
+        return when (errorTag) {
+            "cooldown" -> RefreshCooldownException(retryAfter)
+            "budget_exhausted" -> RefreshBudgetExhaustedException(retryAfter)
+            else -> RateLimitedException(
+                retryAfterSeconds = retryAfter,
+                resetEpochSeconds = response.headers["X-RateLimit-Reset"]?.toLongOrNull(),
+                limit = response.headers["X-RateLimit-Limit"]?.toIntOrNull(),
+            )
+        }
+    }
+
+    private suspend fun parseRefreshErrorBody(
+        response: io.ktor.client.statement.HttpResponse,
+    ): Pair<String?, Long?> =
+        try {
+            val text = response.bodyAsText()
+            if (text.isBlank()) {
+                null to null
+            } else {
+                val obj = Json.parseToJsonElement(text) as? kotlinx.serialization.json.JsonObject
+                if (obj == null) {
+                    null to null
+                } else {
+                    val error = (obj["error"] as? kotlinx.serialization.json.JsonPrimitive)
+                        ?.contentOrNull
+                    val retryAfter = (obj["retry_after"] as? kotlinx.serialization.json.JsonPrimitive)
+                        ?.contentOrNull
+                        ?.toLongOrNull()
+                    error to retryAfter
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null to null
         }
 
     private inline fun <T> safeCall(block: () -> Result<T>): Result<T> =
@@ -269,12 +458,6 @@ class BackendApiClient(
     companion object {
         private const val BASE_URL = BACKEND_BASE_URL
         private const val X_GITHUB_TOKEN_HEADER = "X-GitHub-Token"
+        private const val DEFAULT_REFRESH_COOLDOWN_SECONDS = 30L
     }
 }
-
-class BackendException(
-    val statusCode: Int,
-    message: String = "HTTP $statusCode",
-) : Exception(message)
-
-class RateLimitedException : Exception("Rate limited by backend (429)")

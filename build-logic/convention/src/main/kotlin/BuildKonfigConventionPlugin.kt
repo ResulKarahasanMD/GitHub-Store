@@ -31,9 +31,11 @@ class BuildKonfigConventionPlugin : Plugin<Project> {
                         ).trim()
 
                     val versionName = libs.findVersion("projectVersionName").get().toString()
+                    val versionCode = libs.findVersion("projectVersionCode").get().toString()
 
                     buildConfigField(FieldSpec.Type.STRING, "GITHUB_CLIENT_ID", githubClientId)
                     buildConfigField(FieldSpec.Type.STRING, "VERSION_NAME", versionName)
+                    buildConfigField(FieldSpec.Type.INT, "VERSION_CODE", versionCode)
                 }
             }
         }

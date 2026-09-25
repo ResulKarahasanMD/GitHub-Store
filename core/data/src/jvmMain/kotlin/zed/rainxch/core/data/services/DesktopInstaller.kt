@@ -5,10 +5,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import zed.rainxch.core.data.model.LinuxPackageType
 import zed.rainxch.core.data.model.LinuxTerminal
-import zed.rainxch.core.domain.model.AssetArchitectureMatcher
-import zed.rainxch.core.domain.model.GithubAsset
-import zed.rainxch.core.domain.model.Platform
-import zed.rainxch.core.domain.model.SystemArchitecture
+import zed.rainxch.core.domain.utils.AssetArchitectureMatcher
+import zed.rainxch.core.domain.utils.AssetSelector
+import zed.rainxch.core.domain.model.account.github.GithubAsset
+import zed.rainxch.core.domain.model.system.Platform
+import zed.rainxch.core.domain.model.system.SystemArchitecture
 import zed.rainxch.core.domain.system.InstallOutcome
 import zed.rainxch.core.domain.system.Installer
 import zed.rainxch.core.domain.system.InstallerInfoExtractor
@@ -32,10 +33,6 @@ class DesktopInstaller(
         determineSystemArchitecture()
     }
 
-    /**
-     * Detects whether the app is running inside a Flatpak sandbox.
-     * Checks for the `/.flatpak-info` file which is always present inside Flatpak containers.
-     */
     private val isRunningInFlatpak: Boolean by lazy {
         try {
             File("/.flatpak-info").exists() ||
@@ -122,10 +119,7 @@ class DesktopInstaller(
                 }
 
                 Platform.LINUX -> {
-                    // Flatpak sandbox prefers native packages over AppImage
-                    // because AppImages inside Flatpak require extra permission
-                    // dances. Outside Flatpak we prefer AppImage — portable,
-                    // no sudo needed.
+
                     if (isRunningInFlatpak) {
                         when (linuxPackageType) {
                             LinuxPackageType.DEB -> listOf(".deb", ".appimage", ".rpm", ".pkg.tar.zst")
@@ -151,28 +145,11 @@ class DesktopInstaller(
 
         val assetsToConsider = compatibleAssets.ifEmpty { assets }
 
-        return assetsToConsider.maxByOrNull { asset ->
-            val name = asset.name.lowercase()
-
-            val extensionIdx = priority.indexOfFirst { name.endsWith(it) }
-            val extensionScore =
-                if (extensionIdx == -1) {
-                    -100000
-                } else {
-                    (priority.size - extensionIdx) * 10000
-                }
-
-            val archScore =
-                if (isExactArchitectureMatch(name, systemArchitecture)) {
-                    1000
-                } else {
-                    0
-                }
-
-            val sizeScore = (asset.size / 1000000).coerceAtMost(100)
-
-            extensionScore + archScore + sizeScore
-        }
+        return AssetSelector.choose(
+            assets = assetsToConsider,
+            deviceArch = systemArchitecture,
+            extensionPriority = priority,
+        )
     }
 
     private fun determineSystemArchitecture(): SystemArchitecture {
@@ -292,11 +269,6 @@ class DesktopInstaller(
         }
     }
 
-    /**
-     * When running inside a Flatpak sandbox, /etc/os-release belongs to the Flatpak runtime
-     * (e.g. org.freedesktop.Platform), not the host OS. To detect the host distro we read
-     * /run/host/os-release, which Flatpak bind-mounts from the host.
-     */
     private fun detectHostLinuxPackageType(): LinuxPackageType {
         val hostOsRelease = File("/run/host/os-release")
         if (!hostOsRelease.exists()) {
@@ -411,21 +383,12 @@ class DesktopInstaller(
         return AssetArchitectureMatcher.isCompatible(name, systemArch)
     }
 
-    private fun isExactArchitectureMatch(
-        assetName: String,
-        systemArch: SystemArchitecture,
-    ): Boolean = AssetArchitectureMatcher.isExactMatch(assetName, systemArch)
-
     override suspend fun isSupported(extOrMime: String): Boolean {
         val ext = extOrMime.lowercase().removePrefix(".")
         return when (platform) {
             Platform.WINDOWS -> ext in listOf("msi", "exe")
             Platform.MACOS -> ext in listOf("dmg", "pkg")
-            // "pkg.tar.zst" keeps the literal double-dotted form the Arch
-            // convention uses. Dispatch below checks the full filename
-            // suffix anyway, but callers that only have the ext token
-            // (e.g. file-extension-only classification paths) would see
-            // "zst" on its own. Accept "pkg.tar.zst" and bare "zst" both.
+
             Platform.LINUX -> ext in listOf("appimage", "deb", "rpm", "pkg.tar.zst", "zst")
             else -> false
         }
@@ -500,13 +463,6 @@ class DesktopInstaller(
 
         }
 
-    /**
-     * Flatpak-sandboxed installation flow.
-     *
-     * Since we can't execute system installers, we use xdg-open (which goes through
-     * the Flatpak portal to the host) to open the file with the host's default handler.
-     * This lets the host's software center / file manager handle the actual installation.
-     */
     private fun installFromFlatpak(
         file: File,
         ext: String,
@@ -514,10 +470,6 @@ class DesktopInstaller(
         Logger.i { "Running in Flatpak sandbox — delegating installation to host system" }
         Logger.i { "File: ${file.absolutePath} (.$ext)" }
 
-        // Arch packages use the double extension `.pkg.tar.zst`. Callers
-        // may pass either "pkg.tar.zst" or just "zst" via `ext` depending
-        // on which classification path computed it, so gate on the
-        // filename directly — same authoritative check installLinux uses.
         val nameLower = file.name.lowercase()
         if (nameLower.endsWith(".pkg.tar.zst")) {
             Logger.d { "Opening .pkg.tar.zst package via xdg-open portal for host installation" }
@@ -609,11 +561,6 @@ class DesktopInstaller(
         }
     }
 
-    /**
-     * Show a notification from within the Flatpak sandbox.
-     * Uses notify-send which goes through the desktop notifications portal.
-     * Falls back to logging if notifications aren't available.
-     */
     private fun showFlatpakNotification(
         title: String,
         message: String,
@@ -621,7 +568,7 @@ class DesktopInstaller(
         try {
             ProcessBuilder(
                 "notify-send",
-                "--app-name=GitHub Store",
+                "--app-name=Komi Store",
                 title,
                 message,
                 "-u",
@@ -635,13 +582,6 @@ class DesktopInstaller(
         }
     }
 
-    /**
-     * Opens the system file manager with the given file highlighted/selected.
-     *
-     * Tries D-Bus FileManager1.ShowItems first (works on GNOME, KDE, etc. and
-     * goes through the Flatpak portal), then falls back to xdg-open on the
-     * parent directory.
-     */
     private fun openInFileManager(file: File) {
         try {
             val fileUri = "file://${file.absolutePath}"
@@ -684,11 +624,16 @@ class DesktopInstaller(
             }
 
             "exe" -> {
-                if (Desktop.isDesktopSupported()) {
-                    Desktop.getDesktop().open(file)
-                } else {
-                    val pb = ProcessBuilder(file.absolutePath)
-                    pb.start()
+
+                try {
+                    ProcessBuilder("cmd", "/c", "start", "", file.absolutePath).start()
+                } catch (e: IOException) {
+                    Logger.w { "Failed to launch installer via cmd start: ${e.message}, falling back to Desktop.open" }
+                    if (Desktop.isDesktopSupported()) {
+                        Desktop.getDesktop().open(file)
+                    } else {
+                        ProcessBuilder(file.absolutePath).start()
+                    }
                 }
             }
 
@@ -776,11 +721,7 @@ class DesktopInstaller(
         file: File,
         ext: String,
     ) {
-        // The `ext` parameter is just the final extension token, but
-        // Arch packages use the double-dotted form `.pkg.tar.zst`. So
-        // look at the full filename when routing to pacman — a bare
-        // `.zst` on a non-pacman-shaped filename is genuinely ambiguous
-        // and we shouldn't hand it to pacman.
+
         val nameLower = file.name.lowercase()
         if (nameLower.endsWith(".pkg.tar.zst")) {
             installPacmanPackage(file)
@@ -985,41 +926,18 @@ class DesktopInstaller(
         throw IOException("Could not install RPM package. Please install it manually.")
     }
 
-    /**
-     * Wraps a string for safe embedding inside a POSIX shell
-     * single-quoted context. Handles embedded single quotes via the
-     * `'\''` closing-escaping-reopening trick.
-     *
-     *   `foo`          → `'foo'`
-     *   `foo'bar`      → `'foo'\''bar'`
-     *   `don't panic`  → `'don'\''t panic'`
-     *
-     * Use this whenever a filename (or any externally-sourced string)
-     * needs to be interpolated into a shell command that ends up being
-     * executed — terminal command builders, `sh -c` invocations, etc.
-     */
     private fun shellQuoteSingleQuotes(s: String): String =
         "'" + s.replace("'", "'\\''") + "'"
 
     private fun installPacmanPackage(file: File) {
         Logger.d { "Installing pacman package: ${file.absolutePath}" }
 
-        // Wrong-distro case: a `.pkg.tar.zst` on a non-Arch system is
-        // effectively impossible to install cleanly (no package manager
-        // knows the format, and conversion tools like `debtap` are
-        // Arch→Debian not the other way, and require user setup to
-        // seed their DB first). Show the user a clear terminal message
-        // instead of silently attempting a path that will fail.
         if (linuxPackageType != LinuxPackageType.ARCH) {
             Logger.w { "Pacman package (.pkg.tar.zst) on non-Arch system (type=$linuxPackageType)." }
             openTerminalForPacmanIncompatible(file.absolutePath)
             return
         }
 
-        // argv-list invocation — no shell involved, so filenames with
-        // special chars are passed safely. No `sh -c` fallback needed
-        // here because pacman -U doesn't need any shell-level chaining
-        // (unlike DEB's `dpkg || apt-get install -f`).
         val installMethods =
             listOf(
                 listOf("pkexec", "pacman", "-U", "--noconfirm", file.absolutePath),
@@ -1059,8 +977,7 @@ class DesktopInstaller(
         val quoted = shellQuoteSingleQuotes(filePath)
 
         if (availableTerminals.isEmpty()) {
-            // Notification body is user-visible text, not a shell command,
-            // so the raw path is fine to display here.
+
             tryShowNotification(
                 "Install via Terminal",
                 "Run: sudo pacman -U $quoted",
@@ -1118,9 +1035,7 @@ class DesktopInstaller(
                 append("echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'; ")
                 append("echo ''; ")
                 append("echo 'This file is an Arch Linux package (.pkg.tar.zst):'; ")
-                // printf treats %s as a plain arg, so the shell-escaped
-                // $quoted resolves back to the real path when printed —
-                // no literal escape characters bleed into the display.
+
                 append("printf '  %s\\n' $quoted; ")
                 append("echo ''; ")
                 append("echo 'Your system uses a different package format.'; ")
@@ -1383,10 +1298,6 @@ class DesktopInstaller(
         }
     }
 
-    /**
-     * Move AppImage to ~/Applications directory
-     * Creates the directory if it doesn't exist
-     */
     private fun moveToApplicationsDirectory(file: File): File {
         val homeDir = System.getProperty("user.home")
         val applicationsDir = File(homeDir, "Applications")

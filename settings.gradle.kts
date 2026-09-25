@@ -27,6 +27,11 @@ dependencyResolutionManagement {
             }
         }
         mavenCentral()
+        maven("https://jitpack.io") {
+            mavenContent {
+                includeGroupAndSubgroups("com.github.topjohnwu")
+            }
+        }
     }
 }
 
@@ -50,6 +55,9 @@ include(":feature:details:presentation")
 include(":feature:dev-profile:presentation")
 include(":feature:dev-profile:data")
 include(":feature:dev-profile:domain")
+include(":feature:repo-pages:domain")
+include(":feature:repo-pages:data")
+include(":feature:repo-pages:presentation")
 include(":feature:favourites:data")
 include(":feature:favourites:domain")
 include(":feature:favourites:presentation")
@@ -58,12 +66,13 @@ include(":feature:tweaks:presentation")
 include(":feature:home:domain")
 include(":feature:home:data")
 include(":feature:home:presentation")
+include(":feature:feed:domain")
+include(":feature:feed:data")
+include(":feature:feed:presentation")
 include(":feature:starred:domain")
 include(":feature:starred:data")
 include(":feature:starred:presentation")
 include(":feature:search:domain")
 include(":feature:search:data")
 include(":feature:search:presentation")
-include(":feature:profile:domain")
-include(":feature:profile:data")
 include(":feature:profile:presentation")

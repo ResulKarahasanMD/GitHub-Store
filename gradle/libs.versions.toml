@@ -31,17 +31,23 @@ koin = "4.1.1"
 ktor = "3.4.0"
 room = "2.8.4"
 skie = "0.10.2"
+slf4jSimple = "2.0.17"
+jna = "5.14.0"
 sqlite = "2.6.2"
 datastore = "1.2.0"
+ksafe = "2.0.0"
 compose-jetbrains = "1.10.3"
 compose-jetbrains-material-you = "1.11.0-alpha03"
 jetbrains-savedstate = "1.4.0"
 moko = "0.20.1"
 buildkonfig = "0.17.1"
 markdownRenderer = "0.39.2"
-liquid = "1.1.1"
 landscapist = "2.9.5"
+coil3 = "3.3.0"
+highlights = "1.0.0"
 shizuku = "13.1.5"
+libsu = "6.0.0"
+dhizuku = "2.5.4"
 hidden-api = "4.4.0"
 jsystemthemedetector = "3.9.1"
 work = "2.11.1"
@@ -51,11 +57,11 @@ ktlint-gradle = "12.1.1"
 flatpak-gradle-generator = "1.7.0"
 
 projectApplicationId = "zed.rainxch.githubstore"
-projectVersionName = "1.7.0"
+projectVersionName = "1.9.3"
+projectVersionCode = "22"
 projectMinSdkVersion = "26"
 projectTargetSdkVersion = "36"
 projectCompileSdkVersion = "36"
-projectVersionCode = "14"
 
 [libraries]
 # Kotlin
@@ -104,15 +110,22 @@ skie = { module = "co.touchlab.skie:skie-annotations", version.ref = "skie" }
 datastore = { module = "androidx.datastore:datastore", version.ref = "datastore" }
 datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
 
+# KSafe — encrypted KMP key/value persistence (replaces DataStore wrappers)
+ksafe = { module = "eu.anifantakis:ksafe", version.ref = "ksafe" }
+
 # Room
 androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
 androidx-room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
 slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4jSimple" }
+jna-platform = { module = "net.java.dev.jna:jna-platform", version.ref = "jna" }
 sqlite-bundled = { module = "androidx.sqlite:sqlite-bundled", version.ref = "sqlite" }
 
 # Image loading
 landscapist-image = { module = "com.github.skydoves:landscapist-coil3", version.ref = "landscapist" }
 landscapist-core = { module = "com.github.skydoves:landscapist-core", version.ref = "landscapist" }
+coil3-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil3" }
+coil3-network-ktor = { module = "io.coil-kt.coil3:coil-network-ktor3", version.ref = "coil3" }
+coil3-svg = { module = "io.coil-kt.coil3:coil-svg", version.ref = "coil3" }
 
 #Permission handling
 moko-permissions = { module = "dev.icerock.moko:permissions", version.ref = "moko" }
@@ -152,6 +165,7 @@ jetbrains-bundle = { module = "org.jetbrains.androidx.core:core-bundle", version
 # Markdown
 markdown-renderer = { module = "com.mikepenz:multiplatform-markdown-renderer-m3", version.ref = "markdownRenderer" }
 markdown-renderer-coil3 = { module = "com.mikepenz:multiplatform-markdown-renderer-coil3", version.ref = "markdownRenderer" }
+highlights = { module = "dev.snipme:highlights", version.ref = "highlights" }
 
 # WorkManager
 androidx-work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
@@ -161,8 +175,11 @@ shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
 shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
 hidden-api-stub = { module = "dev.rikka.hidden:stub", version.ref = "hidden-api" }
 
-# Liquid effect
-liquid = { module = "io.github.fletchmckee.liquid:liquid", version.ref = "liquid" }
+# libsu (root shell)
+libsu-core = { module = "com.github.topjohnwu.libsu:core", version.ref = "libsu" }
+
+# Dhizuku
+dhizuku-api = { module = "io.github.iamr0s:Dhizuku-API", version.ref = "dhizuku" }
 
 ktlint-gradlePlugin = { group = "org.jlleitschuh.gradle", name="ktlint-gradle", version.ref = "ktlint-gradle" }
 
@@ -215,5 +232,7 @@ ktor-common = [
 
 landscapist = [
     "landscapist-core",
-    "landscapist-image"
+    "landscapist-image",
+    "coil3-compose",
+    "coil3-svg",
 ]

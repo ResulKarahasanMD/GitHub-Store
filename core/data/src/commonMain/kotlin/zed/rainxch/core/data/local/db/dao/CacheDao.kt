@@ -29,6 +29,9 @@ interface CacheDao {
     @Query("DELETE FROM cache_entries WHERE `key` = :key")
     suspend fun delete(key: String)
 
+    @Query("DELETE FROM cache_entries WHERE `key` = :key AND cachedAt = :cachedAt")
+    suspend fun deleteIfMatches(key: String, cachedAt: Long)
+
     @Query("DELETE FROM cache_entries WHERE `key` LIKE :prefix || '%'")
     suspend fun deleteByPrefix(prefix: String)
 

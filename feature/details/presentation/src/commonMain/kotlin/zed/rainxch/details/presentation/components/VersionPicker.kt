@@ -1,5 +1,7 @@
 package zed.rainxch.details.presentation.components
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -8,7 +10,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -19,27 +20,26 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.UnfoldMore
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.collections.immutable.ImmutableList
 import org.jetbrains.compose.resources.stringResource
-import zed.rainxch.core.domain.model.GithubRelease
+import zed.rainxch.core.domain.model.account.github.GithubRelease
+import zed.rainxch.core.domain.model.account.github.isEffectivelyPreRelease
+import zed.rainxch.core.domain.model.account.github.preReleaseLabel
+import zed.rainxch.core.presentation.components.dividers.KomiHorizontalDivider
+import zed.rainxch.core.presentation.components.icon.KomiIcon
+import zed.rainxch.core.presentation.components.overlays.KomiSheet
+import zed.rainxch.core.presentation.components.overlays.KomiSheetPlacement
+import zed.rainxch.core.presentation.components.text.KomiText
+import zed.rainxch.core.presentation.components.text.KomiTextRole
+import zed.rainxch.core.presentation.locals.LocalPersonality
 import zed.rainxch.details.presentation.DetailsAction
 import zed.rainxch.githubstore.core.presentation.res.Res
 import zed.rainxch.githubstore.core.presentation.res.latest_badge
@@ -49,123 +49,120 @@ import zed.rainxch.githubstore.core.presentation.res.pre_release_badge
 import zed.rainxch.githubstore.core.presentation.res.select_version
 import zed.rainxch.githubstore.core.presentation.res.versions_title
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun VersionPicker(
     selectedRelease: GithubRelease?,
-    filteredReleases: List<GithubRelease>,
+    filteredReleases: ImmutableList<GithubRelease>,
     isPickerVisible: Boolean,
     onAction: (DetailsAction) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val isPickerEnabled by remember(filteredReleases) {
-        derivedStateOf { filteredReleases.isNotEmpty() }
-    }
+    val colors = LocalPersonality.current.colors
+    val isPickerEnabled = filteredReleases.isNotEmpty()
 
+    val rowShape = RoundedCornerShape(LocalPersonality.current.shape.corner)
     Column(
         modifier = modifier.wrapContentHeight(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(
+        KomiText(
             text = stringResource(Res.string.versions_title),
-            style = MaterialTheme.typography.labelLargeEmphasized,
-            color = MaterialTheme.colorScheme.tertiary,
+            role = KomiTextRole.Label,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 12.sp,
+            color = colors.primary,
             modifier = Modifier.padding(horizontal = 4.dp),
         )
-        OutlinedCard(
-            onClick = { onAction(DetailsAction.ToggleVersionPicker) },
-            enabled = isPickerEnabled,
-            modifier = Modifier.fillMaxWidth(),
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(rowShape)
+                .border(
+                    width = 1.dp,
+                    color = colors.outline,
+                    shape = rowShape,
+                )
+                .background(colors.surface)
+                .clickable(enabled = isPickerEnabled) {
+                    onAction(DetailsAction.ToggleVersionPicker)
+                }
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .heightIn(min = 36.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                        .heightIn(min = 36.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text =
-                            selectedRelease?.tagName
-                                ?: stringResource(Res.string.no_version_selected),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        overflow = TextOverflow.Clip,
-                        maxLines = 1,
-                    )
-                    selectedRelease?.name?.let { name ->
-                        if (name != selectedRelease.tagName) {
-                            Text(
-                                text = name,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
+            Column(modifier = Modifier.weight(1f)) {
+                KomiText(
+                    text = selectedRelease?.tagName
+                        ?: stringResource(Res.string.no_version_selected),
+                    role = KomiTextRole.Stamp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onSurface,
+                    overflow = TextOverflow.Clip,
+                    maxLines = 1,
+                    uppercase = false,
+                )
+                selectedRelease?.name?.let { name ->
+                    if (name != selectedRelease.tagName) {
+                        KomiText(
+                            text = name,
+                            role = KomiTextRole.Body,
+                            fontSize = 13.sp,
+                            color = colors.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
-                Icon(
-                    imageVector = Icons.Default.UnfoldMore,
-                    contentDescription = stringResource(Res.string.select_version),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
+            KomiIcon(
+                imageVector = Icons.Default.UnfoldMore,
+                contentDescription = stringResource(Res.string.select_version),
+                tint = colors.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 
     if (isPickerVisible) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
-
-        ModalBottomSheet(
-            onDismissRequest = { onAction(DetailsAction.ToggleVersionPicker) },
-            sheetState = sheetState,
+        KomiSheet(
+            onDismiss = { onAction(DetailsAction.ToggleVersionPicker) },
+            placement = KomiSheetPlacement.Bottom,
         ) {
-            Column(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding(),
-            ) {
-                Text(
-                    text = stringResource(Res.string.versions_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            KomiText(
+                text = stringResource(Res.string.versions_title),
+                role = KomiTextRole.Title,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 20.sp,
+                color = colors.onSurface,
+                modifier = Modifier.padding(vertical = 6.dp),
+                uppercase = false,
+            )
+            Spacer(Modifier.size(8.dp))
+            if (filteredReleases.isEmpty()) {
+                KomiText(
+                    text = stringResource(Res.string.not_available),
+                    role = KomiTextRole.Body,
+                    color = colors.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 16.dp),
                 )
-
-                HorizontalDivider()
-
-                if (filteredReleases.isEmpty()) {
-                    Text(
-                        text = stringResource(Res.string.not_available),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(16.dp),
-                    )
-                } else {
-                    val latestReleaseId by remember(filteredReleases) {
-                        derivedStateOf { filteredReleases.firstOrNull()?.id }
-                    }
-
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(vertical = 8.dp),
-                    ) {
-                        items(
-                            items = filteredReleases,
-                            key = { it.id },
-                        ) { release ->
-                            VersionListItem(
-                                release = release,
-                                isSelected = release.id == selectedRelease?.id,
-                                isLatest = release.id == latestReleaseId,
-                                onClick = { onAction(DetailsAction.SelectRelease(release)) },
-                            )
-                        }
+            } else {
+                val latestReleaseId = filteredReleases.firstOrNull()?.id
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                ) {
+                    items(items = filteredReleases, key = { it.id }) { release ->
+                        VersionListItem(
+                            release = release,
+                            isSelected = release.id == selectedRelease?.id,
+                            isLatest = release.id == latestReleaseId,
+                            onClick = { onAction(DetailsAction.SelectRelease(release)) },
+                        )
+                        KomiHorizontalDivider(
+                            color = colors.outlineVariant.copy(alpha = 0.5f),
+                            thickness = 0.5.dp,
+                        )
                     }
                 }
             }
@@ -181,85 +178,93 @@ private fun VersionListItem(
     onClick: () -> Unit,
 ) {
     Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .clickable(
-                    onClickLabel = stringResource(Res.string.select_version),
-                    onClick = onClick,
-                ).padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(
+                onClickLabel = stringResource(Res.string.select_version),
+                onClick = onClick,
+            )
+            .padding(horizontal = 4.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        val colors = LocalPersonality.current.colors
+        val shape = LocalPersonality.current.shape
         Column(modifier = Modifier.weight(1f)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
+                KomiText(
                     text = release.tagName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                    color =
-                        if (isSelected) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
+                    role = KomiTextRole.Stamp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                    color = if (isSelected) colors.primary else colors.onSurface,
+                    uppercase = false,
                 )
                 if (isLatest) {
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                    ) {
-                        Text(
-                            text = stringResource(Res.string.latest_badge),
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
-                    }
+                    KomiText(
+                        text = stringResource(Res.string.latest_badge),
+                        role = KomiTextRole.Label,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp,
+                        color = colors.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(shape.cornerSmall))
+                            .border(
+                                width = 1.dp,
+                                color = colors.primary,
+                                shape = RoundedCornerShape(shape.cornerSmall),
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
                 }
-                if (release.isPrerelease) {
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = MaterialTheme.colorScheme.tertiaryContainer,
-                    ) {
-                        Text(
-                            text = stringResource(Res.string.pre_release_badge),
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                        )
-                    }
+                if (release.isEffectivelyPreRelease()) {
+                    val specificLabel = release.preReleaseLabel()
+                    KomiText(
+                        text = specificLabel ?: stringResource(Res.string.pre_release_badge),
+                        role = KomiTextRole.Label,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp,
+                        color = colors.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(shape.cornerSmall))
+                            .border(
+                                width = 1.dp,
+                                color = colors.primary,
+                                shape = RoundedCornerShape(shape.cornerSmall),
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
                 }
             }
-
             release.name?.let { name ->
                 if (name != release.tagName) {
-                    Text(
+                    KomiText(
                         text = name,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        role = KomiTextRole.Body,
+                        fontSize = 13.sp,
+                        color = colors.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
-
-            Text(
+            KomiText(
                 text = release.publishedAt.take(10),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.outline,
+                role = KomiTextRole.Label,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = colors.onSurfaceVariant,
+                uppercase = false,
             )
         }
-
         if (isSelected) {
             Spacer(Modifier.width(8.dp))
-            Icon(
+            KomiIcon(
                 imageVector = Icons.Default.CheckCircle,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = colors.primary,
                 modifier = Modifier.size(20.dp),
             )
         }

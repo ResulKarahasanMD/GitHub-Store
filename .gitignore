@@ -37,3 +37,10 @@ google-services.json
 composeApp/release/baselineProfiles/
 
 composeApp/kotzilla.json
+
+roadmap/
+.brain/
+# macOS
+**/.DS_Store
+
+.claude/komi

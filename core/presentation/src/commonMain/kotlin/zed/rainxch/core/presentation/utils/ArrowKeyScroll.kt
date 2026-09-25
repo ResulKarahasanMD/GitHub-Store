@@ -22,9 +22,6 @@ import kotlinx.coroutines.launch
 private const val ARROW_STEP_PX = 120f
 private const val PAGE_STEP_FRACTION = 0.9f
 
-// When `autoFocus = true`, the modifier requests keyboard focus on first
-// composition so arrow keys work without a prior click/tab. Pass `false` on
-// screens where a TextField should keep focus (e.g. search inputs).
 @Composable
 fun Modifier.arrowKeyScroll(
     listState: LazyListState,
@@ -33,14 +30,15 @@ fun Modifier.arrowKeyScroll(
     arrowKeyScrollInternal(
         autoFocus = autoFocus,
         scrollBy = { delta -> listState.animateScrollBy(delta) },
-        pageSize = { listState.layoutInfo.viewportSize.height.toFloat() },
+        pageSize = {
+            listState.layoutInfo.viewportSize.height
+                .toFloat()
+        },
         scrollToTop = { listState.animateScrollToItem(0) },
         scrollToBottom = {
             val last = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
             listState.animateScrollToItem(last)
-            // `animateScrollToItem` aligns the target to the viewport start,
-            // which can leave empty space after the last item. A follow-up
-            // large-delta scroll is clamped to the real end.
+
             listState.animateScrollBy(Float.MAX_VALUE)
         },
     )
@@ -53,7 +51,10 @@ fun Modifier.arrowKeyScroll(
     arrowKeyScrollInternal(
         autoFocus = autoFocus,
         scrollBy = { delta -> gridState.animateScrollBy(delta) },
-        pageSize = { gridState.layoutInfo.viewportSize.height.toFloat() },
+        pageSize = {
+            gridState.layoutInfo.viewportSize.height
+                .toFloat()
+        },
         scrollToTop = { gridState.animateScrollToItem(0) },
         scrollToBottom = {
             val last = (gridState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
@@ -128,7 +129,9 @@ private fun Modifier.arrowKeyScrollInternal(
                     true
                 }
 
-                else -> false
+                else -> {
+                    false
+                }
             }
         }
 }

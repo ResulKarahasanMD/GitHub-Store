@@ -1,10 +1,14 @@
 package zed.rainxch.core.data.mappers
 
 import zed.rainxch.core.data.dto.BackendRepoResponse
-import zed.rainxch.core.domain.model.DiscoveryPlatform
-import zed.rainxch.core.domain.model.GithubRepoSummary
-import zed.rainxch.core.domain.model.GithubUser
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
+import zed.rainxch.core.domain.model.account.github.GithubRepoSummary
+import zed.rainxch.core.domain.model.account.github.GithubUser
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.days
+import kotlin.time.ExperimentalTime
 
+@OptIn(ExperimentalTime::class)
 fun BackendRepoResponse.toSummary(): GithubRepoSummary =
     GithubRepoSummary(
         id = id,
@@ -23,11 +27,21 @@ fun BackendRepoResponse.toSummary(): GithubRepoSummary =
         forksCount = forksCount,
         language = language,
         topics = topics.ifEmpty { null },
+        topicCodes = topicCodes,
         releasesUrl = releasesUrl ?: "https://api.github.com/repos/$fullName/releases{/id}",
-        updatedAt = latestReleaseDate ?: updatedAt ?: "",
+        updatedAt = updatedAt ?: latestReleaseDate ?: "",
+        pushedAt = pushedAt,
         availablePlatforms = buildAvailablePlatforms(),
         downloadCount = downloadCount,
+        latestReleaseDate = latestReleaseDate?.takeIf { it.isNotBlank() }
+            ?: releaseRecency?.takeIf { it >= 0 }?.let { releaseDateFromRecencyDays(it) },
+        latestReleaseTag = latestReleaseTag,
+        dailyStars = dailyStars,
     )
+
+@OptIn(ExperimentalTime::class)
+fun releaseDateFromRecencyDays(days: Int): String =
+    (Clock.System.now() - days.days).toString()
 
 private fun BackendRepoResponse.buildAvailablePlatforms(): List<DiscoveryPlatform> =
     buildList {

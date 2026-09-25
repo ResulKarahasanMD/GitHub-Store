@@ -7,16 +7,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import zed.rainxch.core.domain.repository.AuthenticationState
 import zed.rainxch.core.domain.repository.InstalledAppsRepository
 import zed.rainxch.core.domain.repository.RateLimitRepository
 import zed.rainxch.core.domain.repository.TweaksRepository
+import zed.rainxch.core.domain.repository.UserSessionRepository
 import zed.rainxch.core.domain.use_cases.SyncInstalledAppsUseCase
 
 class MainViewModel(
     private val tweaksRepository: TweaksRepository,
     private val installedAppsRepository: InstalledAppsRepository,
-    private val authenticationState: AuthenticationState,
+    private val userSessionRepository: UserSessionRepository,
     private val rateLimitRepository: RateLimitRepository,
     private val syncUseCase: SyncInstalledAppsUseCase,
 ) : ViewModel() {
@@ -25,7 +25,7 @@ class MainViewModel(
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
-            authenticationState
+            userSessionRepository
                 .isUserLoggedIn()
                 .collect { isLoggedIn ->
                     _state.update { it.copy(isLoggedIn = isLoggedIn) }
@@ -75,14 +75,38 @@ class MainViewModel(
         }
 
         viewModelScope.launch {
-            tweaksRepository.getLiquidGlassEnabled().collect { enabled ->
-                _state.update { it.copy(isLiquidGlassEnabled = enabled) }
+            tweaksRepository.getPersonality().collect { personality ->
+                _state.update { it.copy(personality = personality) }
+            }
+        }
+
+        viewModelScope.launch {
+            tweaksRepository.getAccentId().collect { accent ->
+                _state.update { it.copy(accent = accent) }
+            }
+        }
+
+        viewModelScope.launch {
+            tweaksRepository.getMangaPaper().collect { paper ->
+                _state.update { it.copy(mangaPaper = paper) }
             }
         }
 
         viewModelScope.launch {
             tweaksRepository.getScrollbarEnabled().collect { enabled ->
                 _state.update { it.copy(isScrollbarEnabled = enabled) }
+            }
+        }
+
+        viewModelScope.launch {
+            tweaksRepository.getContentWidth().collect { width ->
+                _state.update { it.copy(contentWidth = width) }
+            }
+        }
+
+        viewModelScope.launch {
+            tweaksRepository.getAppLanguage().collect { tag ->
+                _state.update { it.copy(appLanguageTag = tag) }
             }
         }
 
@@ -101,7 +125,7 @@ class MainViewModel(
         }
 
         viewModelScope.launch {
-            authenticationState.sessionExpiredEvent.collect {
+            userSessionRepository.sessionExpiredEvent.collect {
                 _state.update { it.copy(showSessionExpiredDialog = true) }
             }
         }

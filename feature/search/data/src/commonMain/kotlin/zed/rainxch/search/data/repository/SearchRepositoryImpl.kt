@@ -26,10 +26,12 @@ import zed.rainxch.core.data.mappers.toSummary
 import zed.rainxch.core.data.network.BackendApiClient
 import zed.rainxch.core.data.network.GitHubClientProvider
 import zed.rainxch.core.data.network.executeRequest
-import zed.rainxch.core.domain.model.DiscoveryPlatform
-import zed.rainxch.core.domain.model.GithubRepoSummary
-import zed.rainxch.core.domain.model.PaginatedDiscoveryRepositories
-import zed.rainxch.core.domain.model.RateLimitException
+import zed.rainxch.core.data.network.shouldFallbackToGithubOrRethrow
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
+import zed.rainxch.core.domain.model.account.github.GithubRepoSummary
+import zed.rainxch.core.domain.model.repository.PaginatedDiscoveryRepositories
+import zed.rainxch.core.domain.model.error.RateLimitException
+import zed.rainxch.core.domain.model.account.github.GithubUser
 import zed.rainxch.domain.model.ExploreResult
 import zed.rainxch.domain.model.ProgrammingLanguage
 import zed.rainxch.domain.model.SortBy
@@ -42,6 +44,8 @@ class SearchRepositoryImpl(
     private val clientProvider: GitHubClientProvider,
     private val backendApiClient: BackendApiClient,
     private val cacheManager: CacheManager,
+    private val forgejoClientRegistry: zed.rainxch.core.data.network.ForgejoClientRegistry,
+    private val tokenStore: zed.rainxch.core.data.data_source.TokenStore,
 ) : SearchRepository {
     private val httpClient: HttpClient get() = clientProvider.client
     private val releaseCheckCache = LruCache<String, GithubRepoSummary>(maxSize = 500)
@@ -80,29 +84,142 @@ class SearchRepositoryImpl(
         sortBy: SortBy,
         sortOrder: SortOrder,
         page: Int,
+        source: zed.rainxch.domain.model.SearchSource,
     ): Flow<PaginatedDiscoveryRepositories> =
         channelFlow {
+            if (source is zed.rainxch.domain.model.SearchSource.Forgejo) {
+                forgejoSearch(source.host, query, page)
+                return@channelFlow
+            }
+
             val cacheKey = searchCacheKey(query, platform, language, sortBy, sortOrder, page)
+
+            val privateMatches =
+                if (page == 1 && query.isNotBlank()) {
+                    searchPrivateRepos(query, platform, language)
+                } else {
+                    emptyList()
+                }
 
             val cached = cacheManager.get<PaginatedDiscoveryRepositories>(cacheKey)
             if (cached != null) {
-                send(cached)
+                send(cached.prepend(privateMatches))
                 return@channelFlow
             }
 
-            // Try backend search first
             val backendResult = tryBackendSearch(query, platform, sortBy, page)
             if (backendResult != null) {
                 cacheManager.put(cacheKey, backendResult, SEARCH_RESULTS)
-                send(backendResult)
+                send(backendResult.prepend(privateMatches))
                 return@channelFlow
             }
 
-            // Fallback to GitHub REST search
-            fallbackGithubSearch(query, platform, language, sortBy, sortOrder, page, cacheKey)
+            fallbackGithubSearch(query, platform, language, sortBy, sortOrder, page, cacheKey, privateMatches)
         }.flowOn(Dispatchers.IO)
 
-    // ── Backend search ────────────────────────────────────────────────
+    private suspend fun isSignedIn(): Boolean =
+        try {
+            tokenStore.currentToken()?.accessToken?.isNotBlank() == true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+
+    private suspend fun searchPrivateRepos(
+        query: String,
+        platform: DiscoveryPlatform,
+        language: ProgrammingLanguage,
+    ): List<GithubRepoSummary> {
+        if (!isSignedIn()) return emptyList()
+
+        val safeQuery = query.trim().replace("\"", "")
+        val q =
+            buildString {
+                append("\"$safeQuery\" in:name,description fork:true is:private")
+                if (language != ProgrammingLanguage.All && language.queryValue != null) {
+                    append(" language:${language.queryValue}")
+                }
+            }
+
+        return try {
+            val response =
+                httpClient
+                    .executeRequest<GithubRepoSearchResponse> {
+                        get("/search/repositories") {
+                            parameter("q", q)
+                            parameter("per_page", 20)
+                        }
+                    }.getOrNull() ?: return emptyList()
+
+            val privateItems = response.items.filter { it.private }
+            if (platform == DiscoveryPlatform.All) {
+                privateItems.map { it.toSummary() }
+            } else {
+                verifyBatch(privateItems, platform)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun PaginatedDiscoveryRepositories.prepend(
+        extra: List<GithubRepoSummary>,
+    ): PaginatedDiscoveryRepositories {
+        if (extra.isEmpty()) return this
+        val existingIds = repos.mapTo(mutableSetOf()) { it.id }
+        val deduped = extra.filter { it.id !in existingIds }
+        if (deduped.isEmpty()) return this
+        return copy(
+            repos = deduped + repos,
+            totalCount = totalCount?.plus(deduped.size),
+        )
+    }
+
+    private suspend fun kotlinx.coroutines.channels.ProducerScope<PaginatedDiscoveryRepositories>.forgejoSearch(
+        host: String,
+        query: String,
+        page: Int,
+    ) {
+        val client = forgejoClientRegistry.clientFor(host)
+        val result = client.searchRepositories(query = query, page = page, limit = PER_PAGE)
+        val repos = result.getOrNull()?.data.orEmpty()
+        val summaries = repos.map { repo ->
+            GithubRepoSummary(
+                id = zed.rainxch.core.domain.utils.RepoIdCodec.encode(host, repo.id),
+                name = repo.name,
+                fullName = repo.fullName ?: "${repo.owner.login}/${repo.name}",
+                owner = GithubUser(
+                    id = repo.owner.id,
+                    login = repo.owner.login,
+                    avatarUrl = repo.owner.avatarUrl,
+                    htmlUrl = repo.owner.htmlUrl,
+                ),
+                description = repo.description,
+                defaultBranch = repo.defaultBranch ?: "main",
+                htmlUrl = repo.htmlUrl,
+                stargazersCount = repo.starsCount,
+                forksCount = repo.forksCount,
+                language = repo.language,
+                topics = null,
+                releasesUrl = "${repo.htmlUrl}/releases",
+                updatedAt = repo.updatedAt ?: "",
+                isFork = false,
+                sourceHost = host,
+            )
+        }
+        send(
+            PaginatedDiscoveryRepositories(
+                repos = summaries,
+                hasMore = repos.size >= PER_PAGE,
+                nextPageIndex = page + 1,
+                totalCount = null,
+                passthroughAttempted = false,
+            ),
+        )
+    }
 
     private suspend fun tryBackendSearch(
         query: String,
@@ -112,7 +229,6 @@ class SearchRepositoryImpl(
     ): PaginatedDiscoveryRepositories? {
         if (query.isBlank()) return null
 
-        // Backend doesn't support forks sorting — fall through to GitHub REST
         if (sortBy == SortBy.MostForks) return null
 
         val platformSlug = when (platform) {
@@ -120,15 +236,19 @@ class SearchRepositoryImpl(
             DiscoveryPlatform.Windows -> "windows"
             DiscoveryPlatform.Macos -> "macos"
             DiscoveryPlatform.Linux -> "linux"
+            DiscoveryPlatform.Ios -> return null 
             DiscoveryPlatform.All -> null
         }
 
         val sort = when (sortBy) {
             SortBy.MostStars -> "stars"
             SortBy.BestMatch -> "relevance"
-            SortBy.MostForks -> null // unreachable, guarded above
+            SortBy.RecentlyUpdated -> "updated"
+            SortBy.RecentlyReleased -> "releases"
+            SortBy.MostForks -> null
         }
 
+        val signedIn = isSignedIn()
         val offset = (page - 1) * BACKEND_PAGE_SIZE
         val result = backendApiClient.search(
             query = query,
@@ -138,21 +258,27 @@ class SearchRepositoryImpl(
             offset = offset,
         )
 
-        return result.getOrNull()?.let { searchResponse ->
-            val repos = searchResponse.items.map { it.toSummary() }
+        return result.fold(
+            onSuccess = { searchResponse ->
+                val repos = searchResponse.items.map { it.toSummary() }
+                val hasMore = offset + repos.size < searchResponse.totalHits
+                PaginatedDiscoveryRepositories(
+                    repos = repos,
+                    hasMore = hasMore,
+                    nextPageIndex = page + 1,
+                    totalCount = searchResponse.totalHits,
+                    passthroughAttempted = searchResponse.passthroughAttempted,
+                )
+            },
+            onFailure = { e ->
 
-            val hasMore = offset + repos.size < searchResponse.totalHits
-            PaginatedDiscoveryRepositories(
-                repos = repos,
-                hasMore = hasMore,
-                nextPageIndex = page + 1,
-                totalCount = searchResponse.totalHits,
-                passthroughAttempted = searchResponse.passthroughAttempted,
-            )
-        }
+                if (!shouldFallbackToGithubOrRethrow(e, signedIn)) {
+                    throw e
+                }
+                null
+            },
+        )
     }
-
-    // ── Fallback GitHub REST search ───────────────────────────────────
 
     private suspend fun kotlinx.coroutines.channels.ProducerScope<PaginatedDiscoveryRepositories>.fallbackGithubSearch(
         query: String,
@@ -162,6 +288,7 @@ class SearchRepositoryImpl(
         sortOrder: SortOrder,
         page: Int,
         cacheKey: String,
+        privateMatches: List<GithubRepoSummary>,
     ) {
         val searchQuery = buildSearchQuery(query, language)
         val sort = sortBy.toGithubSortParam()
@@ -199,7 +326,7 @@ class SearchRepositoryImpl(
                             hasMore = false,
                             nextPageIndex = currentPage + 1,
                             totalCount = total,
-                        ),
+                        ).prepend(privateMatches),
                     )
                     return
                 }
@@ -215,7 +342,7 @@ class SearchRepositoryImpl(
                             totalCount = total,
                         )
                     cacheManager.put(cacheKey, result, SEARCH_RESULTS)
-                    send(result)
+                    send(result.prepend(privateMatches))
                     return
                 }
 
@@ -226,7 +353,7 @@ class SearchRepositoryImpl(
                             hasMore = false,
                             nextPageIndex = currentPage + 1,
                             totalCount = total,
-                        ),
+                        ).prepend(privateMatches),
                     )
                     return
                 }
@@ -241,7 +368,7 @@ class SearchRepositoryImpl(
                     hasMore = true,
                     nextPageIndex = currentPage + 1,
                     totalCount = null,
-                ),
+                ).prepend(privateMatches),
             )
         } catch (e: RateLimitException) {
             throw e
@@ -253,7 +380,7 @@ class SearchRepositoryImpl(
                     repos = emptyList(),
                     hasMore = false,
                     nextPageIndex = page,
-                ),
+                ).prepend(privateMatches),
             )
         }
     }
@@ -332,7 +459,8 @@ class SearchRepositoryImpl(
                     name.endsWith(".msi") || name.endsWith(".exe") ||
                     name.endsWith(".dmg") || name.endsWith(".pkg") ||
                     name.endsWith(".appimage") || name.endsWith(".deb") ||
-                    name.endsWith(".rpm") || name.endsWith(".pkg.tar.zst")
+                    name.endsWith(".rpm") || name.endsWith(".pkg.tar.zst") ||
+                    name.endsWith(".ipa")
             }
 
             DiscoveryPlatform.Android -> {
@@ -350,6 +478,10 @@ class SearchRepositoryImpl(
             DiscoveryPlatform.Linux -> {
                 name.endsWith(".appimage") || name.endsWith(".deb") ||
                     name.endsWith(".rpm") || name.endsWith(".pkg.tar.zst")
+            }
+
+            DiscoveryPlatform.Ios -> {
+                name.endsWith(".ipa")
             }
         }
     }
@@ -404,6 +536,8 @@ class SearchRepositoryImpl(
             } else {
                 null
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
@@ -443,6 +577,7 @@ class SearchRepositoryImpl(
             DiscoveryPlatform.Windows -> "windows"
             DiscoveryPlatform.Macos -> "macos"
             DiscoveryPlatform.Linux -> "linux"
+            DiscoveryPlatform.Ios -> "ios"
             DiscoveryPlatform.All -> null
         }
 

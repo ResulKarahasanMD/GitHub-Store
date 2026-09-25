@@ -3,7 +3,7 @@ package zed.rainxch.core.data.network
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
 import okhttp3.Credentials
-import zed.rainxch.core.domain.model.ProxyConfig
+import zed.rainxch.core.domain.model.settings.ProxyConfig
 import java.net.Authenticator
 import java.net.InetSocketAddress
 import java.net.PasswordAuthentication
@@ -20,10 +20,7 @@ actual fun createPlatformHttpClient(proxyConfig: ProxyConfig): HttpClient {
                 }
 
                 is ProxyConfig.System -> {
-                    // java.net.ProxySelector.getDefault() does not read Android's
-                    // per-network HTTP proxy. Android publishes the active proxy
-                    // through standard system properties instead, which we resolve
-                    // explicitly here so traffic actually flows through it.
+
                     proxy = resolveAndroidSystemProxy()
                 }
 
@@ -31,7 +28,7 @@ actual fun createPlatformHttpClient(proxyConfig: ProxyConfig): HttpClient {
                     proxy =
                         Proxy(
                             Proxy.Type.HTTP,
-                            InetSocketAddress(proxyConfig.host, proxyConfig.port),
+                            InetSocketAddress.createUnresolved(proxyConfig.host, proxyConfig.port),
                         )
                     if (proxyConfig.username != null) {
                         config {
@@ -54,7 +51,7 @@ actual fun createPlatformHttpClient(proxyConfig: ProxyConfig): HttpClient {
                     proxy =
                         Proxy(
                             Proxy.Type.SOCKS,
-                            InetSocketAddress(proxyConfig.host, proxyConfig.port),
+                            InetSocketAddress.createUnresolved(proxyConfig.host, proxyConfig.port),
                         )
 
                     if (proxyConfig.username != null) {
@@ -81,9 +78,7 @@ actual fun createPlatformHttpClient(proxyConfig: ProxyConfig): HttpClient {
 }
 
 internal fun resolveAndroidSystemProxy(): Proxy {
-    // System properties are user/OS-supplied, so guard against malformed
-    // values: InetSocketAddress(String, Int) throws IllegalArgumentException
-    // for ports outside 0..65535.
+
     val httpsHost = System.getProperty("https.proxyHost")?.takeIf { it.isNotBlank() }
     val httpsPort = System.getProperty("https.proxyPort")?.toIntOrNull()?.takeIf { it in 1..65535 }
     if (httpsHost != null && httpsPort != null) {

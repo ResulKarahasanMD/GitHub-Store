@@ -1,5 +1,6 @@
 package zed.rainxch.githubstore
 
+import zed.rainxch.core.domain.system.DesktopOs
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -13,12 +14,6 @@ object DesktopDeepLink {
     private const val SCHEME = "githubstore"
     private const val DESKTOP_FILE_NAME = "github-store-deeplink"
 
-    /**
-     * On Windows and Linux, ensure the `githubstore://` protocol is registered.
-     * - Windows: Writes to HKCU registry.
-     * - Linux: Creates a `.desktop` file and registers via `xdg-mime`.
-     * No-op on macOS (handled via Info.plist in the packaged .app).
-     */
     fun registerUriSchemeIfNeeded() {
         when {
             isWindows() -> registerWindows()
@@ -27,55 +22,66 @@ object DesktopDeepLink {
     }
 
     private fun registerWindows() {
-        val checkResult =
-            runCommand(
-                "reg",
-                "query",
-                "HKCU\\SOFTWARE\\Classes\\$SCHEME",
-                "/ve",
-            )
-        if (checkResult != null && checkResult.contains("URL:")) return
+        val exePath =
+            resolveExePath() ?: run {
+                println("DeepLink: skipped Windows scheme registration (exe path unresolved)")
+                return
+            }
 
-        val exePath = resolveExePath() ?: return
+        val iconValue = "\"$exePath\",1"
+        val commandValue = "\"$exePath\" \"%1\""
 
-        runCommand(
-            "reg",
-            "add",
-            "HKCU\\SOFTWARE\\Classes\\$SCHEME",
-            "/ve",
-            "/d",
-            "URL:GitHub Store Protocol",
-            "/f",
-        )
-        runCommand(
-            "reg",
-            "add",
-            "HKCU\\SOFTWARE\\Classes\\$SCHEME",
-            "/v",
-            "URL Protocol",
-            "/d",
-            "",
-            "/f",
-        )
-        runCommand(
-            "reg",
-            "add",
-            "HKCU\\SOFTWARE\\Classes\\$SCHEME\\DefaultIcon",
-            "/ve",
-            "/d",
-            "\"$exePath\",1",
-            "/f",
-        )
-        runCommand(
-            "reg",
-            "add",
-            "HKCU\\SOFTWARE\\Classes\\$SCHEME\\shell\\open\\command",
-            "/ve",
-            "/d",
-            "\"$exePath\" \"%1\"",
-            "/f",
-        )
+        if (windowsRegistrationIsValid(commandValue)) return
+
+        val regContent =
+            buildString {
+                append("Windows Registry Editor Version 5.00\r\n\r\n")
+                append("[HKEY_CURRENT_USER\\SOFTWARE\\Classes\\$SCHEME]\r\n")
+                append("@=\"URL:Komi Store Protocol\"\r\n")
+                append("\"URL Protocol\"=\"\"\r\n\r\n")
+                append("[HKEY_CURRENT_USER\\SOFTWARE\\Classes\\$SCHEME\\DefaultIcon]\r\n")
+                append("@=\"${regEscape(iconValue)}\"\r\n\r\n")
+                append("[HKEY_CURRENT_USER\\SOFTWARE\\Classes\\$SCHEME\\shell\\open\\command]\r\n")
+                append("@=\"${regEscape(commandValue)}\"\r\n")
+            }
+
+        val regFile =
+            try {
+                File.createTempFile("komi-scheme", ".reg")
+            } catch (e: Exception) {
+                println("DeepLink: Windows scheme registration failed (temp file): ${e.message}")
+                return
+            }
+
+        try {
+            regFile.writeBytes(("\uFEFF$regContent").toByteArray(Charsets.UTF_16LE))
+            val result = runCommandResult("reg", "import", regFile.absolutePath)
+            if (result == null || result.exitCode != 0) {
+                println("DeepLink: Windows scheme registration failed (reg import): ${result?.output?.trim().orEmpty()}")
+            }
+        } catch (e: Exception) {
+            println("DeepLink: Windows scheme registration failed: ${e.message}")
+        } finally {
+            runCatching { regFile.delete() }
+        }
     }
+
+    private fun windowsRegistrationIsValid(expectedCommandValue: String): Boolean {
+        val protocol = runCommand("reg", "query", "HKCU\\SOFTWARE\\Classes\\$SCHEME", "/v", "URL Protocol")
+        if (protocol == null || !protocol.contains("URL Protocol")) return false
+        val command =
+            runCommand("reg", "query", "HKCU\\SOFTWARE\\Classes\\$SCHEME\\shell\\open\\command", "/ve")
+                ?: return false
+        val actualCommandValue =
+            command
+                .lineSequence()
+                .firstOrNull { it.contains("REG_SZ") }
+                ?.substringAfter("REG_SZ")
+                ?.trim()
+        return actualCommandValue.equals(expectedCommandValue, ignoreCase = true)
+    }
+
+    private fun regEscape(value: String): String = value.replace("\\", "\\\\").replace("\"", "\\\"")
 
     private fun registerLinux() {
         val appsDir = File(System.getProperty("user.home"), ".local/share/applications")
@@ -91,7 +97,7 @@ object DesktopDeepLink {
             """
             [Desktop Entry]
             Type=Application
-            Name=GitHub Store
+            Name=Komi Store
             Exec="$exePath" %u
             Terminal=false
             MimeType=x-scheme-handler/$SCHEME;
@@ -102,11 +108,6 @@ object DesktopDeepLink {
         runCommand("xdg-mime", "default", "$DESKTOP_FILE_NAME.desktop", "x-scheme-handler/$SCHEME")
     }
 
-    /**
-     * Try to forward a deep link URI to an already-running instance.
-     * @return `true` if the URI was forwarded (this instance should exit),
-     *         `false` if no existing instance is running.
-     */
     fun tryForwardToRunningInstance(uri: String): Boolean =
         try {
             Socket("127.0.0.1", SINGLE_INSTANCE_PORT).use { socket ->
@@ -117,10 +118,6 @@ object DesktopDeepLink {
             false
         }
 
-    /**
-     * Start listening for URIs forwarded from new instances.
-     * Calls [onUri] on the main thread when a URI is received.
-     */
     fun startInstanceListener(onUri: (String) -> Unit) {
         val thread =
             Thread({
@@ -146,31 +143,47 @@ object DesktopDeepLink {
         thread.start()
     }
 
-    private fun isWindows(): Boolean = System.getProperty("os.name")?.lowercase()?.contains("win") == true
+    private fun isWindows(): Boolean = DesktopOs.isWindows
 
-    private fun isLinux(): Boolean = System.getProperty("os.name")?.lowercase()?.contains("linux") == true
+    private fun isLinux(): Boolean = DesktopOs.isLinux
 
-    private fun resolveExePath(): String? =
-        try {
+    private fun resolveExePath(): String? {
+        System
+            .getProperty("jpackage.app-path")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        return try {
             ProcessHandle
                 .current()
                 .info()
                 .command()
                 .orElse(null)
+                ?.takeIf {
+                    it.isNotBlank() &&
+                        !it.endsWith("java.exe", ignoreCase = true) &&
+                        !it.endsWith("javaw.exe", ignoreCase = true)
+                }
         } catch (_: Exception) {
             null
         }
+    }
 
-    private fun runCommand(vararg cmd: String): String? =
+    private data class CommandResult(
+        val exitCode: Int,
+        val output: String,
+    )
+
+    private fun runCommandResult(vararg cmd: String): CommandResult? =
         try {
             val process =
                 ProcessBuilder(*cmd)
                     .redirectErrorStream(true)
                     .start()
             val output = process.inputStream.bufferedReader().readText()
-            process.waitFor()
-            output
+            CommandResult(process.waitFor(), output)
         } catch (_: Exception) {
             null
         }
+
+    private fun runCommand(vararg cmd: String): String? = runCommandResult(*cmd)?.takeIf { it.exitCode == 0 }?.output
 }

@@ -12,8 +12,10 @@ val appsModule =
                 appsRepository = get(),
                 logger = get(),
                 clientProvider = get(),
+                backendApiClient = get(),
                 packageMonitor = get(),
                 tweaksRepository = get(),
+                forgejoClientRegistry = get(),
             )
         }
     }

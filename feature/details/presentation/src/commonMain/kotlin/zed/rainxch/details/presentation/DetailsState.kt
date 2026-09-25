@@ -1,11 +1,15 @@
 package zed.rainxch.details.presentation
 
-import zed.rainxch.core.domain.model.GithubAsset
-import zed.rainxch.core.domain.model.GithubRelease
-import zed.rainxch.core.domain.model.GithubRepoSummary
-import zed.rainxch.core.domain.model.GithubUserProfile
-import zed.rainxch.core.domain.model.InstalledApp
-import zed.rainxch.core.domain.model.SystemArchitecture
+import androidx.compose.runtime.Immutable
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
+import zed.rainxch.core.domain.model.account.github.GithubAsset
+import zed.rainxch.core.domain.model.account.github.GithubRelease
+import zed.rainxch.core.domain.model.account.github.GithubRepoSummary
+import zed.rainxch.core.domain.model.account.github.GithubUserProfile
+import zed.rainxch.core.domain.model.apk.ApkInspection
+import zed.rainxch.core.domain.model.installation.InstalledApp
+import zed.rainxch.core.domain.model.system.SystemArchitecture
 import zed.rainxch.details.domain.model.ReleaseCategory
 import zed.rainxch.details.domain.model.RepoStats
 import zed.rainxch.details.presentation.model.AttestationStatus
@@ -16,17 +20,19 @@ import zed.rainxch.details.presentation.model.SigningKeyWarning
 import zed.rainxch.details.presentation.model.TranslationState
 import zed.rainxch.details.presentation.model.TranslationTarget
 
+@Immutable
 data class DetailsState(
     val isLoading: Boolean = true,
+    val isCurrentUserOwner: Boolean = false,
+    val isRefreshing: Boolean = false,
+    val refreshCooldownUntilEpochMs: Long? = null,
     val errorMessage: String? = null,
     val userProfile: GithubUserProfile? = null,
     val repository: GithubRepoSummary? = null,
-    // state for assets
     val primaryAsset: GithubAsset? = null,
-    val installableAssets: List<GithubAsset> = emptyList(),
-    // state for releases
+    val installableAssets: ImmutableList<GithubAsset> = persistentListOf(),
     val selectedRelease: GithubRelease? = null,
-    val allReleases: List<GithubRelease> = emptyList(),
+    val allReleases: ImmutableList<GithubRelease> = persistentListOf(),
     val releasesLoadFailed: Boolean = false,
     val isRetryingReleases: Boolean = false,
     val isReleaseSelectorVisible: Boolean = false,
@@ -35,7 +41,7 @@ data class DetailsState(
     val stats: RepoStats? = null,
     val readmeMarkdown: String? = null,
     val readmeLanguage: String? = null,
-    val installLogs: List<InstallLogItem> = emptyList(),
+    val installLogs: ImmutableList<InstallLogItem> = persistentListOf(),
     val isDownloading: Boolean = false,
     val downloadProgressPercent: Int? = null,
     val downloadedBytes: Long = 0L,
@@ -51,12 +57,14 @@ data class DetailsState(
     val isAppManagerAvailable: Boolean = false,
     val isAppManagerEnabled: Boolean = false,
     val installedApp: InstalledApp? = null,
+    val installedApps: ImmutableList<InstalledApp> = persistentListOf(),
     val isFavourite: Boolean = false,
     val isStarred: Boolean = false,
     val isTrackingApp: Boolean = false,
     val isAboutExpanded: Boolean = false,
     val isWhatsNewExpanded: Boolean = false,
-    val isLiquidGlassEnabled: Boolean = true,
+    val aboutMeasuredHeightPx: Float? = null,
+    val whatsNewMeasuredHeightPx: Float? = null,
     val aboutTranslation: TranslationState = TranslationState(),
     val whatsNewTranslation: TranslationState = TranslationState(),
     val isLanguagePickerVisible: Boolean = false,
@@ -68,33 +76,21 @@ data class DetailsState(
     val showExternalInstallerPrompt: Boolean = false,
     val pendingInstallFilePath: String? = null,
     val showUninstallConfirmation: Boolean = false,
+    val showUnlinkConfirmation: Boolean = false,
     val attestationStatus: AttestationStatus = AttestationStatus.UNCHECKED,
-) {
-    val filteredReleases: List<GithubRelease>
-        get() =
-            when (selectedReleaseCategory) {
-                ReleaseCategory.STABLE -> allReleases.filter { !it.isPrerelease }
-                ReleaseCategory.PRE_RELEASE -> allReleases.filter { it.isPrerelease }
-                ReleaseCategory.ALL -> allReleases
-            }
+    val stalledStableSinceDays: Int? = null,
+    val mergedChangelog: String? = null,
+    val mergedChangelogBaseTag: String? = null,
+    val latestStableHasInstallableAsset: Boolean = false,
+    val apkInspection: ApkInspection? = null,
+    val isApkInspectSheetVisible: Boolean = false,
+    val isApkInspectLoading: Boolean = false,
+    val isApkInspectCoachmarkPending: Boolean = false,
+    val isChannelChipCoachmarkPending: Boolean = false,
+    val showAllPlatforms: Boolean = false,
 
-    /**
-     * True when the currently-tracked app has a *parked* install file
-     * that matches the user's current selection (release tag + asset
-     * name). The install button can short-circuit the download phase
-     * and dispatch the dialog/install flow on the parked file directly.
-     *
-     * This is the data-layer match — the VM also re-checks the file
-     * exists on disk before actually using it (in [parkedFilePathIfMatches]).
-     */
-    val isPendingInstallReady: Boolean
-        get() {
-            val app = installedApp ?: return false
-            val parkedVersion = app.pendingInstallVersion ?: return false
-            val parkedAsset = app.pendingInstallAssetName ?: return false
-            if (app.pendingInstallFilePath.isNullOrBlank()) return false
-            val tag = selectedRelease?.tagName ?: return false
-            val assetName = primaryAsset?.name ?: return false
-            return parkedVersion == tag && parkedAsset == assetName
-        }
-}
+    val filteredReleases: ImmutableList<GithubRelease> = persistentListOf(),
+    val latestStableRelease: GithubRelease? = null,
+    val canSwitchToStable: Boolean = false,
+    val isPendingInstallReady: Boolean = false,
+)

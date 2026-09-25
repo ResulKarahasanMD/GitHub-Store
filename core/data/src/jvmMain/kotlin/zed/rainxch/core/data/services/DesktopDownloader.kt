@@ -10,24 +10,30 @@ import okhttp3.Call
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import zed.rainxch.core.data.data_source.TokenStore
+import zed.rainxch.core.data.network.GithubAssetAuth
 import zed.rainxch.core.data.network.ProxyManager
-import zed.rainxch.core.domain.model.DownloadProgress
-import zed.rainxch.core.domain.model.ProxyConfig
-import zed.rainxch.core.domain.model.ProxyScope
+import zed.rainxch.core.domain.model.installation.DownloadProgress
+import zed.rainxch.core.domain.model.settings.ProxyConfig
+import zed.rainxch.core.domain.model.settings.ProxyScope
 import zed.rainxch.core.domain.network.Downloader
 import java.io.File
 import java.net.Authenticator
 import java.net.InetSocketAddress
 import java.net.PasswordAuthentication
 import java.net.Proxy
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 class DesktopDownloader(
     private val files: FileLocationsProvider,
+    private val tokenStore: TokenStore,
 ) : Downloader {
     private val activeDownloads = ConcurrentHashMap<String, Call>()
-    private val nameToId = ConcurrentHashMap<String, String>()
+    private val idsByName = ConcurrentHashMap<String, MutableSet<String>>()
 
     private fun buildClient(): OkHttpClient {
         Authenticator.setDefault(null)
@@ -77,7 +83,9 @@ class DesktopDownloader(
     override fun download(
         url: String,
         suggestedFileName: String?,
+        bypassMirror: Boolean,
     ): Flow<DownloadProgress> =
+
         flow {
             val client = buildClient()
 
@@ -97,22 +105,30 @@ class DesktopDownloader(
             }
 
             val downloadId = UUID.randomUUID().toString()
-            val previous = nameToId.putIfAbsent(safeName, downloadId)
-            if (previous != null) {
-                throw IllegalStateException("A download for '$safeName' is already in progress")
-            }
 
             val destination = File(dir, safeName)
-            if (destination.exists()) {
-                Logger.d { "Deleting existing file before download: ${destination.absolutePath}" }
-                destination.delete()
-            }
+
+            val tempFile = File(dir, "$safeName.part-$downloadId")
+            if (tempFile.exists()) tempFile.delete()
 
             Logger.d { "Starting download: $url" }
 
-            val request = Request.Builder().url(url).build()
+            val request =
+                Request
+                    .Builder()
+                    .url(url)
+                    .apply {
+                        val token = githubToken()
+                        if (token != null && GithubAssetAuth.isGithubHost(url)) {
+                            header("Authorization", "Bearer $token")
+                            if (GithubAssetAuth.isGithubApiHost(url)) {
+                                header("Accept", "application/octet-stream")
+                            }
+                        }
+                    }.build()
             val call = client.newCall(request)
             activeDownloads[downloadId] = call
+            idsByName.computeIfAbsent(safeName) { ConcurrentHashMap.newKeySet() }.add(downloadId)
 
             try {
                 call.execute().use { response ->
@@ -125,7 +141,7 @@ class DesktopDownloader(
                     val total = if (contentLength > 0) contentLength else null
 
                     body.byteStream().use { input ->
-                        destination.outputStream().use { output ->
+                        tempFile.outputStream().use { output ->
                             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                             var downloaded: Long = 0
                             var bytesRead: Int
@@ -139,25 +155,54 @@ class DesktopDownloader(
                         }
                     }
 
-                    if (destination.exists() && destination.length() > 0) {
-                        Logger.d { "Download complete: ${destination.absolutePath}" }
-                        val finalDownloaded = destination.length()
-                        val finalPercent =
-                            if (total != null) ((finalDownloaded * 100L) / total).toInt() else 100
-                        emit(DownloadProgress(finalDownloaded, total, finalPercent))
-                    } else {
-                        throw IllegalStateException("File not ready after download: ${destination.absolutePath}")
+                    if (!tempFile.exists() || tempFile.length() <= 0) {
+                        throw IllegalStateException(
+                            "Download produced empty file: ${tempFile.absolutePath} (contentLength=$contentLength)",
+                        )
                     }
+
+                    moveAtomic(tempFile, destination)
+
+                    Logger.d { "Download complete: ${destination.absolutePath}" }
+                    val finalDownloaded = destination.length()
+                    val finalPercent =
+                        if (total != null) ((finalDownloaded * 100L) / total).toInt() else 100
+                    emit(DownloadProgress(finalDownloaded, total, finalPercent))
                 }
             } catch (e: Exception) {
-                destination.delete()
+                tempFile.delete()
                 Logger.e(e) { "Download failed" }
                 throw e
             } finally {
                 activeDownloads.remove(downloadId)
-                nameToId.remove(safeName)
+                idsByName.computeIfPresent(safeName) { _, set ->
+                    set.remove(downloadId)
+                    if (set.isEmpty()) null else set
+                }
             }
         }.flowOn(Dispatchers.IO)
+
+    private suspend fun githubToken(): String? =
+        try {
+            tokenStore.currentToken()?.accessToken?.trim()?.takeIf { it.isNotEmpty() }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+
+    private fun moveAtomic(source: File, target: File) {
+        try {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
+            )
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
 
     override suspend fun saveToFile(
         url: String,
@@ -196,27 +241,18 @@ class DesktopDownloader(
 
     override suspend fun cancelDownload(fileName: String): Boolean =
         withContext(Dispatchers.IO) {
-            var cancelled = false
-            val downloadId = nameToId[fileName]
-            if (downloadId != null) {
-                activeDownloads[downloadId]?.let { call ->
-                    if (!call.isCanceled()) {
-                        call.cancel()
-                        cancelled = true
-                    }
-                }
-                activeDownloads.remove(downloadId)
-                nameToId.remove(fileName)
 
-                // Only delete the file if we cancelled an active download (incomplete file)
-                if (cancelled) {
-                    val file = File(files.userDownloadsDir(), fileName)
-                    if (file.exists()) {
-                        file.delete()
-                    }
+            val ids = idsByName.remove(fileName)?.toList().orEmpty()
+            if (ids.isEmpty()) return@withContext false
+
+            var cancelled = false
+            for (id in ids) {
+                val call = activeDownloads.remove(id) ?: continue
+                if (!call.isCanceled()) {
+                    call.cancel()
+                    cancelled = true
                 }
             }
-
             cancelled
         }
 

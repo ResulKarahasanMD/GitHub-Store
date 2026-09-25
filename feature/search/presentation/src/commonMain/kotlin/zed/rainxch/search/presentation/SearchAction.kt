@@ -1,8 +1,9 @@
 package zed.rainxch.search.presentation
 
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
 import zed.rainxch.core.presentation.model.GithubRepoSummaryUi
 import zed.rainxch.search.presentation.model.ProgrammingLanguageUi
-import zed.rainxch.search.presentation.model.SearchPlatformUi
+import zed.rainxch.search.presentation.model.SearchSourceUi
 import zed.rainxch.search.presentation.model.SortByUi
 import zed.rainxch.search.presentation.model.SortOrderUi
 
@@ -12,7 +13,11 @@ sealed interface SearchAction {
     ) : SearchAction
 
     data class OnPlatformTypeSelected(
-        val searchPlatform: SearchPlatformUi,
+        val searchPlatform: DiscoveryPlatform,
+    ) : SearchAction
+
+    data class OnSourceSelected(
+        val source: SearchSourceUi,
     ) : SearchAction
 
     data class OnLanguageSelected(
@@ -60,6 +65,8 @@ sealed interface SearchAction {
 
     data object OnFabClick : SearchAction
 
+    data object OnToggleFiltersSheet : SearchAction
+
     data object DismissClipboardBanner : SearchAction
 
     data class OnHistoryItemClick(
@@ -73,4 +80,22 @@ sealed interface SearchAction {
     data object OnClearAllHistory : SearchAction
 
     data object ExploreFromGithub : SearchAction
+
+    data object OnDisableHideSeenForResults : SearchAction
+
+    data class OnHideRepository(
+        val repo: GithubRepoSummaryUi,
+    ) : SearchAction
+
+    data class OnUndoHideRepository(
+        val repoId: Long,
+    ) : SearchAction
+
+    data class OnMarkAsSeen(
+        val repo: GithubRepoSummaryUi,
+    ) : SearchAction
+
+    data class OnMarkAsUnseen(
+        val repoId: Long,
+    ) : SearchAction
 }

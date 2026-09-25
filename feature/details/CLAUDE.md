@@ -1,105 +1,39 @@
-# CLAUDE.md - Details Feature
+# Details Feature
 
-## Purpose
+Repository detail screen — owner, stats, releases with download/install, readme (with translation), per-app install/update flow. Most complex feature.
 
-Repository detail screen. Displays full info for a GitHub repository including owner profile, stats, releases with download links, readme rendering (with translation support), and installation/update flow. This is the most complex feature module.
-
-## Module Structure
+## Structure
 
 ```
 feature/details/
-├── domain/
-│   ├── model/
-│   │   ├── ReleaseCategory.kt        # Release filtering categories
-│   │   ├── RepoStats.kt              # Stars, forks, open issues
-│   │   ├── SupportedLanguage.kt      # Languages for readme translation
-│   │   └── TranslationResult.kt      # Translation response model
-│   └── repository/
-│       ├── DetailsRepository.kt      # Repo, releases, readme, stats, user profile
-│       └── TranslationRepository.kt  # Readme translation
-├── data/
-│   ├── di/SharedModule.kt            # Koin: detailsModule
-│   ├── repository/
-│   │   ├── DetailsRepositoryImpl.kt  # API calls + readme localization
-│   │   └── TranslationRepositoryImpl.kt  # Translation API integration
-│   ├── model/ReadmeAttempt.kt        # Readme fetch attempt tracking
-│   └── utils/
-│       ├── ReadmeLocalizationHelper.kt   # Find readme in user's language
-│       └── preprocessMarkdown.kt     # Markdown preprocessing
+├── domain/       # DetailsRepository, TranslationRepository; ReleaseCategory, RepoStats, SupportedLanguage, TranslationResult
+├── data/         # impls + ReadmeLocalizationHelper, preprocessMarkdown
 └── presentation/
-    ├── DetailsViewModel.kt            # State management for detail screen
-    ├── DetailsState.kt                # Repo, releases, readme, download progress, etc.
-    ├── DetailsAction.kt               # Load, download, install, favourite, star, etc.
-    ├── DetailsEvent.kt                # Navigation, toast events
-    ├── DetailsRoot.kt                 # Main composable
-    ├── model/
-    │   ├── DownloadStage.kt           # Download progress tracking
-    │   ├── InstallLogItem.kt          # Installation log entries
-    │   ├── LogResult.kt               # Log result types
-    │   ├── ShowDowngradeWarning.kt    # Downgrade confirmation model
-    │   ├── SupportedLanguages.kt      # UI language list
-    │   ├── TranslationState.kt        # Translation UI state
-    │   └── TranslationTarget.kt       # Translation target selection
+    ├── DetailsViewModel.kt / State / Action / Event / Root
+    ├── model/    # DownloadStage, InstallLogItem, LogResult, ShowDowngradeWarning, SupportedLanguages, TranslationState
     ├── components/
-    │   ├── AppHeader.kt               # App icon, name, developer
-    │   ├── LanguagePicker.kt          # Readme translation language selector
-    │   ├── ReleaseAssetsPicker.kt     # Asset selection for download
-    │   ├── SmartInstallButton.kt      # Context-aware install/update/open button
-    │   ├── StatItem.kt                # Individual stat display
-    │   ├── TranslationControls.kt     # Translation UI controls
-    │   ├── VersionPicker.kt           # Release version selector
-    │   ├── VersionTypePicker.kt       # Stable/pre-release filter
-    │   └── sections/
-    │       ├── About.kt               # Description & topics
-    │       ├── Header.kt              # Top header section
-    │       ├── Logs.kt                # Installation/download logs
-    │       ├── Owner.kt               # Repository owner info
-    │       ├── ReportIssue.kt         # Issue reporting section
-    │       ├── Stats.kt               # Stars, forks, issues
-    │       └── WhatsNew.kt            # Release changelog
-    ├── states/ErrorState.kt           # Error display composable
-    └── utils/
-        ├── LocalTopbarLiquidState.kt
-        ├── LogResultAsText.kt         # Log result formatting
-        ├── MarkdownImageTransformer.kt  # Transform relative image URLs
-        ├── MarkdownUtils.kt           # Markdown preprocessing
-        └── SystemArchitecture.kt      # Platform architecture detection
-```
-
-## Key Interfaces
-
-```kotlin
-interface DetailsRepository {
-    suspend fun getRepositoryById(id: Long): GithubRepoSummary
-    suspend fun getRepositoryByOwnerAndName(owner: String, name: String): GithubRepoSummary
-    suspend fun getLatestPublishedRelease(owner: String, repo: String, defaultBranch: String): GithubRelease?
-    suspend fun getAllReleases(owner: String, repo: String, defaultBranch: String): List<GithubRelease>
-    suspend fun getReadme(owner: String, repo: String, defaultBranch: String): Triple<ReadmeContent, LanguageCode?, ReadmePath>?
-    suspend fun getRepoStats(owner: String, repo: String): RepoStats
-    suspend fun getUserProfile(username: String): GithubUserProfile
-}
-
-interface TranslationRepository {
-    suspend fun translate(text: String, targetLanguage: SupportedLanguage): TranslationResult
-}
+    │   ├── AppHeader, ReleaseAssetsPicker, VersionPicker, VersionTypePicker, SmartInstallButton, InspectApkButton, ApkInspectSheet, LanguagePicker, TranslationControls, StatItem
+    │   └── sections/ About, Header, Logs, Owner, ReportIssue, Stats, WhatsNew, ReleaseChannel
+    ├── states/ErrorState
+    └── utils/    # MarkdownImageTransformer, MarkdownUtils, SystemArchitecture, LocalTopbarLiquidState, LogResultAsText
 ```
 
 ## Navigation
 
-Route: `GithubStoreGraph.DetailsScreen(repositoryId: Long, owner: String, repo: String, isComingFromUpdate: Boolean)`
+`GithubStoreGraph.DetailsScreen(repositoryId, owner, repo, isComingFromUpdate, sourceHost)`. By ID or owner+name (deep links use latter; `repositoryId == -1` falls back to owner+name lookup). `sourceHost` non-null routes all `DetailsRepository` calls through `ForgejoClientRegistry` (Codeberg / Forgejo / custom forge).
 
-Can be reached via repo ID or owner+name (for deep links). Falls back to owner+name lookup if `repositoryId == -1`. `isComingFromUpdate` flag indicates navigation from an update notification.
+## Notes
 
-## Implementation Notes
-
-- Readme supports localization: `ReadmeLocalizationHelper` tries to find readme in user's language first
-- Readme translation: `TranslationRepository` translates readme content to user's chosen language via `LanguagePicker`
-- Markdown rendering uses `multiplatform-markdown-renderer` with custom `MarkdownImageTransformer` for relative URLs
-- Download flow tracks stages via `DownloadStage` (idle → downloading → installing → done)
-- `SmartInstallButton` changes behavior based on installed/update-available/not-installed state
-- `ReleaseAssetsPicker` allows selecting specific assets; `VersionTypePicker` filters stable vs pre-release
-- Version picker allows selecting specific releases for download
-- Downgrade warning shown when installing an older version than currently installed
-- Integrates with `FavouritesRepository`, `StarredRepository`, `InstalledAppsRepository` from core
-- Uses `Downloader` and `Installer` interfaces from core/domain for platform-specific download/install
-- On Android, install may use Shizuku (silent) or standard system installer depending on user preference in profile settings
+- Readme localized via `ReadmeLocalizationHelper`; markdown via `multiplatform-markdown-renderer` + `MarkdownImageTransformer`. Translation via `TranslationRepository` + `LanguagePicker`. `TranslationProvider` enum = `GOOGLE` / `YOUDAO` / `LIBRE_TRANSLATE` / `DEEPL` / `MICROSOFT`.
+- Download stages: `DownloadStage` idle→downloading→installing→done. `SmartInstallButton` adapts to install state. Downgrade warning before installing older version.
+- Injects (lots): `DetailsRepository`, `TranslationRepository`, `FavouritesRepository`, `StarredRepository`, `InstalledAppsRepository`, `SeenReposRepository`, `TweaksRepository`, `TelemetryRepository`, `ExternalImportRepository`, `AuthenticationState`, `ProfileRepository`, `Downloader`, `Installer`, `PackageMonitor`, `SystemInstallSerializer`, `BrowserHelper`, `ShareManager`, `Platform`, `SyncInstalledAppsUseCase`, `InstallationManager`, `AttestationVerifier`, `DownloadOrchestrator`, `ApkInspector`, `GitHubStoreLogger`. Data layer additionally injects `ForgejoClientRegistry`.
+- Android installer paths: Default / Shizuku / Dhizuku / Root. Root via raw `su` (`RootServiceManager`). Dhizuku 14+ retries without installer attribution.
+- **Multi-OS picker (E15):** `ReleaseAssetsItemsPicker` toggle flips `TweaksRepository.showAllPlatforms`. ON → assets group by `assetPlatformOf` into `PlatformSectionCard`s with "Your device"/"For transfer" chips. Non-current asset → `OnDownloadForTransfer` → `BrowserHelper.openUrl`.
+- **Coachmarks:** APK Inspect button pulse + ReleaseChannel chip Popup. One-shot via `TweaksRepository.get*CoachmarkShown`.
+- **Self-owned ✓ badge (E20):** `AppHeader` ✓ next to owner login when `state.isCurrentUserOwner`. Reactive via `combine(profileRepo.getUser(), state.repository.owner.login)`.
+- **Skip release (E542):** per-app `skippedReleaseTag` on `InstalledApp`. `SmartInstallButton` suppresses CTA; auto-clears on strictly-newer release.
+- **Forgejo / Codeberg branch:** `DetailsRepositoryImpl.getRepositoryByOwnerAndName / getAllReleases / getReadme / getRepoStats / getLatestPublishedRelease` accept `sourceHost: String? = null`. Non-null → `ForgejoApiClient` direct call (no backend mediator). README from `/contents/README.md?ref={branch}` (Forgejo lacks `/readme`); license sniffed from `/contents/LICENSE` via SPDX regex; downloads aggregated by summing asset `download_count`. CRLF release bodies normalized so GFM tables render. Foreign-source `getUserProfile` skipped (GitHub-only). `AppHeader` avatar falls back to `repository.owner.avatarUrl` when profile null.
+- **Multi-flavor primary picker (#638):** `pickPrimaryInstalledApp` prefers asset-filter match → `isUpdateAvailable=false` variant → `first()`. Prevents false "Update" CTA when a project ships multiple packages (e.g. generic + Play APK) and only one variant is current.
+- **Content width:** `LocalContentWidth` (`COMPACT` 680dp default, `WIDE` 960dp, `EXTRA_WIDE` fills window). Set in `Tweaks → Appearance` (desktop). Outer Box's `Modifier.scrollable(state=listState, reverseDirection=true, enabled = !ANDROID)` forwards mouse-wheel events from empty side gutters to the LazyColumn — gated to non-Android to avoid double scrollable contending with LazyColumn touch.
+- **Markdown perf:** Chunked progressive rendering (`splitMarkdownIntoChunks`, ~4000 chars). Pre-processing (theme-aware images + `separateAdjacentImageLinks`) on `Dispatchers.Default`. `onAction` lambda hoisted via `remember`; `MarkdownComponents` memoized; `TranslationState @Immutable`. Together kills download-progress-driven recomp storms.
+- **Markdown image link awareness:** `LinkAwareMarkdownImage` walks `ASTNode.parent` for `INLINE_LINK`, makes badge images clickable to outer href. `MarkdownImageTransformer` adds browser-like User-Agent + accept header to bypass CDN hotlink protection on common badge services.

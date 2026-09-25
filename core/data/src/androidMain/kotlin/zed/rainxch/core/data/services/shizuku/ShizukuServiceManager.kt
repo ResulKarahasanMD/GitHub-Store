@@ -68,32 +68,37 @@ class ShizukuServiceManager(
         _status.value = computeStatus()
     }
 
-    private fun computeStatus(): ShizukuStatus {
-        val installed = isShizukuInstalled()
-        Logger.d(TAG) { "computeStatus() — shizukuInstalled=$installed" }
-        if (!installed) return ShizukuStatus.NOT_INSTALLED
-
-        return try {
+    private fun computeStatus(): ShizukuStatus =
+        try {
             val binderAlive = Shizuku.pingBinder()
             Logger.d(TAG) { "computeStatus() — pingBinder=$binderAlive" }
-            if (!binderAlive) return ShizukuStatus.NOT_RUNNING
-
-            val permResult = Shizuku.checkSelfPermission()
-            Logger.d(TAG) { "computeStatus() — checkSelfPermission=$permResult (GRANTED=${PackageManager.PERMISSION_GRANTED})" }
-            if (permResult != PackageManager.PERMISSION_GRANTED) {
-                return ShizukuStatus.PERMISSION_NEEDED
+            if (binderAlive) {
+                val permResult = Shizuku.checkSelfPermission()
+                Logger.d(TAG) {
+                    "computeStatus() — checkSelfPermission=$permResult (GRANTED=${PackageManager.PERMISSION_GRANTED})"
+                }
+                if (permResult != PackageManager.PERMISSION_GRANTED) {
+                    ShizukuStatus.PERMISSION_NEEDED
+                } else {
+                    Logger.d(TAG) { "computeStatus() — READY" }
+                    ShizukuStatus.READY
+                }
+            } else {
+                val installed = isShizukuOrSuiInstalled()
+                Logger.d(TAG) { "computeStatus() — binder dead, shizukuOrSuiInstalled=$installed" }
+                if (installed) ShizukuStatus.NOT_RUNNING else ShizukuStatus.NOT_INSTALLED
             }
-            Logger.d(TAG) { "computeStatus() — READY" }
-            ShizukuStatus.READY
         } catch (e: Exception) {
             Logger.w(TAG) { "Error checking Shizuku status: ${e.javaClass.simpleName}: ${e.message}" }
             ShizukuStatus.NOT_RUNNING
         }
-    }
 
-    private fun isShizukuInstalled(): Boolean =
+    private fun isShizukuOrSuiInstalled(): Boolean =
+        isPackageInstalled(SHIZUKU_PACKAGE) || isPackageInstalled(SUI_PACKAGE)
+
+    private fun isPackageInstalled(packageName: String): Boolean =
         try {
-            context.packageManager.getPackageInfo(SHIZUKU_PACKAGE, 0)
+            context.packageManager.getPackageInfo(packageName, 0)
             true
         } catch (_: PackageManager.NameNotFoundException) {
             false
@@ -212,6 +217,7 @@ class ShizukuServiceManager(
     companion object {
         private const val TAG = "ShizukuServiceManager"
         private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
+        private const val SUI_PACKAGE = "com.sui"
         private const val BIND_TIMEOUT_MS = 15_000L
         const val SHIZUKU_PERMISSION_REQUEST_CODE = 1001
     }

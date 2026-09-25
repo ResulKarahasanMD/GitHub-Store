@@ -1,7 +1,7 @@
 package zed.rainxch.apps.presentation.mappers
 
 import zed.rainxch.apps.presentation.model.InstalledAppUi
-import zed.rainxch.core.domain.model.InstalledApp
+import zed.rainxch.core.domain.model.installation.InstalledApp
 
 fun InstalledApp.toUi(): InstalledAppUi =
     InstalledAppUi(
@@ -49,6 +49,8 @@ fun InstalledApp.toUi(): InstalledAppUi =
         pendingInstallFilePath = pendingInstallFilePath,
         pendingInstallVersion = pendingInstallVersion,
         pendingInstallAssetName = pendingInstallAssetName,
+        skippedReleaseTag = skippedReleaseTag,
+        sourceHost = sourceHost,
     )
 
 fun InstalledAppUi.toDomain(): InstalledApp =
@@ -97,4 +99,6 @@ fun InstalledAppUi.toDomain(): InstalledApp =
         pendingInstallFilePath = pendingInstallFilePath,
         pendingInstallVersion = pendingInstallVersion,
         pendingInstallAssetName = pendingInstallAssetName,
+        skippedReleaseTag = skippedReleaseTag,
+        sourceHost = sourceHost,
     )

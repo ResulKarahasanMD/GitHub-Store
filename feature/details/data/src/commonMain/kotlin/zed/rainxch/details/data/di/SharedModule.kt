@@ -19,6 +19,8 @@ val detailsModule =
                 backendApiClient = get(),
                 localizationManager = get(),
                 cacheManager = get(),
+                forgejoClientRegistry = get(),
+                tokenStore = get(),
             )
         }
 
@@ -42,6 +44,7 @@ val detailsModule =
                 installer = get(),
                 installedAppsRepository = get(),
                 favouritesRepository = get(),
+                tweaksRepository = get(),
                 logger = get(),
             )
         }

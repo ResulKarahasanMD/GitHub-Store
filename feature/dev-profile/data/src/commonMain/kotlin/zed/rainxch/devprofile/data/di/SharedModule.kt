@@ -10,6 +10,7 @@ val devProfileModule =
             DeveloperProfileRepositoryImpl(
                 logger = get(),
                 clientProvider = get(),
+                backendApiClient = get(),
                 platform = get(),
                 installedAppsDao = get(),
                 favouritesRepository = get(),

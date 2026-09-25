@@ -1,8 +1,10 @@
 package zed.rainxch.starred.presentation.components
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -11,45 +13,42 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallSplit
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Warning
-import androidx.compose.material3.Badge
-import androidx.compose.material3.Card
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledIconToggleButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialShapes
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SuggestionChip
-import androidx.compose.material3.Text
-import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.skydoves.landscapist.ImageOptions
-import com.skydoves.landscapist.coil3.CoilImage
+import androidx.compose.ui.unit.sp
 import org.jetbrains.compose.resources.stringResource
-import zed.rainxch.core.presentation.components.ExpressiveCard
-import zed.rainxch.core.presentation.theme.GithubStoreTheme
+import zed.rainxch.core.presentation.components.GitHubStoreImage
+import zed.rainxch.core.presentation.components.chips.KomiChip
+import zed.rainxch.core.presentation.components.chips.KomiChipKind
+import zed.rainxch.core.presentation.components.chips.KomiChipSize
+import zed.rainxch.core.presentation.components.icon.KomiIcon
+import zed.rainxch.core.presentation.components.surfaces.KomiSurface
+import zed.rainxch.core.presentation.components.text.KomiText
+import zed.rainxch.core.presentation.components.text.KomiTextRole
+import zed.rainxch.core.presentation.locals.LocalPersonality
+import zed.rainxch.core.presentation.personality.utils.PersonalityPreview
 import zed.rainxch.core.presentation.utils.formatCount
 import zed.rainxch.githubstore.core.presentation.res.*
 import zed.rainxch.starred.presentation.model.StarredRepositoryUi
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StarredRepositoryItem(
     repository: StarredRepositoryUi,
@@ -58,173 +57,133 @@ fun StarredRepositoryItem(
     onDevProfileClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    ExpressiveCard(
+    val colors = LocalPersonality.current.colors
+    val shape = LocalPersonality.current.shape
+    KomiSurface(
         onClick = onItemClick,
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                CoilImage(
+                GitHubStoreImage(
                     imageModel = { repository.repoOwnerAvatarUrl },
-                    modifier =
-                        Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .clickable(onClick = {
-                                onDevProfileClick()
-                            }),
-                    imageOptions =
-                        ImageOptions(
-                            contentScale = ContentScale.Crop,
-                        ),
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(shape.cornerSmall))
+                        .clickable(onClick = onDevProfileClick),
                 )
 
-                Spacer(modifier = Modifier.width(12.dp))
-
                 Column(
-                    modifier =
-                        Modifier
-                            .weight(1f)
-                            .clickable(onClick = {
-                                onDevProfileClick()
-                            }),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable(onClick = onDevProfileClick),
                 ) {
-                    Text(
+                    KomiText(
                         text = repository.repoName,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        role = KomiTextRole.Title,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        uppercase = false,
                     )
 
-                    Text(
-                        text = repository.repoOwner,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        KomiText(
+                            text = repository.repoOwner,
+                            role = KomiTextRole.Body,
+                            fontSize = 13.sp,
+                            color = colors.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            uppercase = false,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+
+                        if (repository.isCurrentUserOwner) {
+                            KomiIcon(
+                                imageVector = Icons.Filled.Verified,
+                                contentDescription = stringResource(Res.string.self_owned_badge),
+                                modifier = Modifier.size(16.dp),
+                                tint = colors.primary,
+                            )
+                        }
+                    }
                 }
 
-                FilledIconToggleButton(
-                    checked = repository.isFavorite,
-                    onCheckedChange = { onToggleFavoriteClick() },
-                    modifier = Modifier.size(40.dp),
-                    shape = MaterialShapes.Cookie6Sided.toShape(),
-                ) {
-                    Icon(
-                        imageVector =
-                            if (repository.isFavorite) {
-                                Icons.Filled.Favorite
-                            } else {
-                                Icons.Outlined.FavoriteBorder
-                            },
-                        contentDescription =
-                            if (repository.isFavorite) {
-                                stringResource(Res.string.remove_from_favourites)
-                            } else {
-                                stringResource(Res.string.add_to_favourites)
-                            },
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
+                FavoriteToggle(
+                    favorited = repository.isFavorite,
+                    onClick = onToggleFavoriteClick,
+                )
             }
 
             repository.repoDescription?.let { description ->
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Text(
+                Spacer(Modifier.height(10.dp))
+                KomiText(
                     text = description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    role = KomiTextRole.Body,
+                    fontSize = 13.sp,
+                    color = colors.onSurfaceVariant,
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
+                    uppercase = false,
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(Modifier.height(12.dp))
 
-            Row(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                StatChip(
+                StatChipNeutral(
                     icon = Icons.Default.Star,
                     label = formatCount(repository.stargazersCount),
-                    contentDescription = "${repository.stargazersCount} ${stringResource(Res.string.stars)}",
                 )
 
-                StatChip(
+                StatChipNeutral(
                     icon = Icons.AutoMirrored.Filled.CallSplit,
                     label = formatCount(repository.forksCount),
-                    contentDescription = "${repository.forksCount} ${stringResource(Res.string.forks)}",
                 )
 
                 if (repository.openIssuesCount > 0) {
-                    StatChip(
+                    StatChipNeutral(
                         icon = Icons.Outlined.Warning,
                         label = formatCount(repository.openIssuesCount),
-                        contentDescription = "${repository.openIssuesCount} ${stringResource(Res.string.issues)}",
                     )
                 }
 
                 repository.primaryLanguage?.let { language ->
-                    SuggestionChip(
-                        onClick = {},
-                        label = {
-                            Text(
-                                text = language,
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        },
-                        modifier = Modifier.height(32.dp),
+                    StatChipNeutral(
+                        icon = Icons.Default.Code,
+                        label = language,
                     )
                 }
-            }
 
-            if (repository.isInstalled || repository.latestRelease != null) {
-                Spacer(modifier = Modifier.height(12.dp))
+                if (repository.isInstalled) {
+                    TonalBadge(
+                        text = stringResource(Res.string.installed),
+                        container = colors.primary.copy(alpha = 0.18f),
+                        content = colors.primary,
+                    )
+                }
 
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (repository.isInstalled) {
-                        Badge(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        ) {
-                            Text(
-                                text = stringResource(Res.string.installed),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
-                        }
-                    }
-
-                    repository.latestRelease?.let { version ->
-                        Badge(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        ) {
-                            Text(
-                                text = version,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            )
-                        }
-                    }
+                repository.latestRelease?.let { version ->
+                    TonalBadge(
+                        text = version,
+                        container = colors.primary.copy(alpha = 0.14f),
+                        content = colors.primary,
+                    )
                 }
             }
         }
@@ -232,29 +191,84 @@ fun StarredRepositoryItem(
 }
 
 @Composable
-private fun StatChip(
-    icon: ImageVector,
-    label: String,
-    contentDescription: String,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = contentDescription,
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+private fun StatChipNeutral(icon: ImageVector, label: String) {
+    val colors = LocalPersonality.current.colors
+    KomiChip(
+        label = label,
+        kind = KomiChipKind.Info,
+        size = KomiChipSize.Sm,
+        leadingContent = {
+            KomiIcon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+                tint = colors.onSurfaceVariant,
+            )
+        },
+    )
+}
 
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
+@Composable
+private fun TonalBadge(
+    text: String,
+    container: Color,
+    content: Color,
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(LocalPersonality.current.shape.cornerSmall))
+            .background(container)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    ) {
+        KomiText(
+            text = text,
+            role = KomiTextRole.Label,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = content,
+            uppercase = false,
+        )
+    }
+}
+
+@Composable
+private fun FavoriteToggle(
+    favorited: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = LocalPersonality.current.colors
+    val shape = LocalPersonality.current.shape
+    val tint = if (favorited) {
+        colors.error
+    } else {
+        colors.onSurfaceVariant
+    }
+    val container = if (favorited) {
+        colors.error.copy(alpha = 0.45f)
+    } else {
+        colors.surfaceContainerHigh
+    }
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(RoundedCornerShape(shape.cornerSmall))
+            .background(container)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        KomiIcon(
+            imageVector = if (favorited) {
+                Icons.Filled.Favorite
+            } else {
+                Icons.Outlined.FavoriteBorder
+            },
+            contentDescription = if (favorited) {
+                stringResource(Res.string.remove_from_favourites)
+            } else {
+                stringResource(Res.string.add_to_favourites)
+            },
+            tint = tint,
+            modifier = Modifier.size(18.dp),
         )
     }
 }
@@ -262,26 +276,25 @@ private fun StatChip(
 @Preview
 @Composable
 private fun PreviewStarredRepoItem() {
-    GithubStoreTheme {
+    PersonalityPreview {
         StarredRepositoryItem(
-            repository =
-                StarredRepositoryUi(
-                    repoId = 1,
-                    repoName = "awesome-app",
-                    repoOwner = "developer",
-                    repoOwnerAvatarUrl = "",
-                    repoDescription = "An awesome application that does amazing things",
-                    primaryLanguage = "Kotlin",
-                    repoUrl = "",
-                    stargazersCount = 1234,
-                    forksCount = 567,
-                    openIssuesCount = 12,
-                    isInstalled = true,
-                    isFavorite = false,
-                    latestRelease = "v1.2.3",
-                    latestReleaseUrl = null,
-                    starredAt = null,
-                ),
+            repository = StarredRepositoryUi(
+                repoId = 1,
+                repoName = "awesome-app",
+                repoOwner = "developer",
+                repoOwnerAvatarUrl = "",
+                repoDescription = "An awesome application that does amazing things",
+                primaryLanguage = "Kotlin",
+                repoUrl = "",
+                stargazersCount = 1234,
+                forksCount = 567,
+                openIssuesCount = 12,
+                isInstalled = true,
+                isFavorite = false,
+                latestRelease = "v1.2.3",
+                latestReleaseUrl = null,
+                starredAt = null,
+            ),
             onToggleFavoriteClick = {},
             onItemClick = {},
             onDevProfileClick = {},

@@ -9,4 +9,8 @@ class AndroidUpdateScheduleManager(
     override fun reschedule(intervalHours: Long) {
         UpdateScheduler.reschedule(context, intervalHours)
     }
+
+    override fun cancel() {
+        UpdateScheduler.cancel(context)
+    }
 }

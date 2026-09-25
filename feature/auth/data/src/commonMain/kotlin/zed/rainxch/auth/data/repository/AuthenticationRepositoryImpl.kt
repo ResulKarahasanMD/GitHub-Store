@@ -3,38 +3,39 @@ package zed.rainxch.auth.data.repository
 import io.ktor.client.network.sockets.ConnectTimeoutException
 import io.ktor.client.network.sockets.SocketTimeoutException
 import io.ktor.client.plugins.HttpRequestTimeoutException
-import kotlinx.coroutines.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import zed.rainxch.auth.data.crypto.PkceGenerator
 import zed.rainxch.auth.data.network.BackendHttpException
 import zed.rainxch.auth.data.network.GitHubAuthApi
 import zed.rainxch.auth.data.network.PatValidation
+import zed.rainxch.auth.data.network.WebAuthApi
 import zed.rainxch.auth.domain.repository.AuthPath
 import zed.rainxch.auth.domain.repository.AuthenticationRepository
 import zed.rainxch.auth.domain.repository.DeviceFlowStart
 import zed.rainxch.auth.domain.repository.DevicePollResult
 import zed.rainxch.auth.domain.repository.PatRejectedException
+import zed.rainxch.auth.domain.repository.WebAuthRegistration
 import zed.rainxch.auth.domain.repository.PollOutcome
 import zed.rainxch.core.data.data_source.TokenStore
 import zed.rainxch.core.data.dto.GithubDeviceTokenSuccessDto
 import zed.rainxch.core.data.mappers.toData
 import zed.rainxch.core.data.mappers.toDomain
 import zed.rainxch.core.data.network.BACKEND_ORIGIN
-import zed.rainxch.core.domain.logging.GitHubStoreLogger
-import zed.rainxch.core.domain.model.GithubDeviceStart
-import zed.rainxch.core.domain.model.GithubDeviceTokenSuccess
+import zed.rainxch.core.domain.logging.KomiStoreLogger
+import zed.rainxch.core.domain.model.account.github.GithubDeviceStart
+import zed.rainxch.core.domain.model.account.github.GithubDeviceTokenSuccess
 import zed.rainxch.feature.auth.data.BuildKonfig
 import java.util.concurrent.TimeoutException
 
 class AuthenticationRepositoryImpl(
     private val tokenStore: TokenStore,
-    private val logger: GitHubStoreLogger,
+    private val logger: KomiStoreLogger,
 ) : AuthenticationRepository {
     override val accessTokenFlow: Flow<String?>
         get() = tokenStore.tokenFlow().map { it?.accessToken }
@@ -48,23 +49,32 @@ class AuthenticationRepositoryImpl(
 
             try {
                 val dto = GitHubAuthApi.startDeviceFlowViaBackend(BACKEND_ORIGIN)
-                logger.debug("✅ Device flow started via Backend. User code: ${dto.userCode}")
+                logger.info("Device flow started via Backend. interval=${dto.intervalSec}s expires=${dto.expiresInSec}s completeUri=${dto.verificationUriComplete != null}")
                 DeviceFlowStart(dto.toDomain(), AuthPath.Backend)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                if (e.isAuthInfrastructureError()) {
-                    logger.debug(
-                        "Backend device/start failed (${e::class.simpleName}: ${e.message}) — falling back to Direct",
+                val backendClass = e::class.simpleName ?: "Throwable"
+                val backendMsg = e.message ?: "<no message>"
+                val backendStatus = (e as? BackendHttpException)?.statusCode
+                if (e.isBackendStartFallbackEligible()) {
+                    logger.warn(
+                        "Backend device/start failed → falling back to Direct. " +
+                            "class=$backendClass status=$backendStatus origin=$BACKEND_ORIGIN msg=$backendMsg",
                     )
                     try {
                         val dto = GitHubAuthApi.startDeviceFlowDirect(clientId)
-                        logger.debug("✅ Device flow started via Direct. User code: ${dto.userCode}")
+                        logger.info("Device flow started via Direct fallback.")
                         DeviceFlowStart(dto.toDomain(), AuthPath.Direct)
                     } catch (inner: CancellationException) {
                         throw inner
                     } catch (inner: Throwable) {
-                        logger.debug("❌ Direct device/start also failed: ${inner.message}")
+                        val innerClass = inner::class.simpleName ?: "Throwable"
+                        val innerMsg = inner.message ?: "<no message>"
+                        logger.error(
+                            "Direct device/start ALSO failed. backendClass=$backendClass backendStatus=$backendStatus backendMsg=$backendMsg | directClass=$innerClass directMsg=$innerMsg",
+                            inner,
+                        )
                         throw Exception(
                             "Failed to start GitHub authentication. " +
                                 "Please check your internet connection and try again.",
@@ -72,7 +82,11 @@ class AuthenticationRepositoryImpl(
                         )
                     }
                 } else {
-                    logger.debug("❌ Backend device/start returned non-infra error: ${e.message}")
+                    logger.error(
+                        "Backend device/start non-infra failure (no fallback). " +
+                            "class=$backendClass status=$backendStatus origin=$BACKEND_ORIGIN msg=$backendMsg",
+                        e,
+                    )
                     throw Exception(
                         "Failed to start GitHub authentication. " +
                             "Please check your internet connection and try again.",
@@ -337,28 +351,48 @@ class AuthenticationRepositoryImpl(
         }
     }
 
+    override suspend fun registerWebAuth(): Result<WebAuthRegistration> =
+        withContext(Dispatchers.IO) {
+            val pkce = PkceGenerator.generate()
+            WebAuthApi
+                .register(
+                    state = pkce.state,
+                    codeChallenge = pkce.codeChallenge,
+                    codeVerifier = pkce.codeVerifier,
+                ).map { authUrl ->
+                    WebAuthRegistration(state = pkce.state, authUrl = authUrl)
+                }
+        }
+
+    override suspend fun exchangeWebAuthHandoff(handoffId: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            WebAuthApi.consumeHandoff(handoffId)
+                .mapCatching { accessToken ->
+                    val dto =
+                        GithubDeviceTokenSuccessDto(
+                            accessToken = accessToken,
+                            tokenType = "Bearer",
+                            expiresIn = null,
+                            scope = null,
+                            refreshToken = null,
+                            refreshTokenExpiresIn = null,
+                            savedAtEpochMillis = System.currentTimeMillis(),
+                        )
+                    saveTokenWithVerification(dto.toDomain())
+                    accessToken
+                }
+        }
+
     override suspend fun signInWithPat(token: String): Result<Unit> =
         withContext(Dispatchers.IO) {
             val trimmed = token.trim()
-            // Format gatekeeping first: trip the obvious paste-errors
-            // (trailing whitespace, partial copy) before even making a
-            // network call.
+
             if (!looksLikePat(trimmed)) {
                 return@withContext Result.failure(
                     IllegalArgumentException("Token format not recognized"),
                 )
             }
 
-            // Network validation via GitHub's /user endpoint. Three
-            // outcomes: Valid → proceed, Rejected → fail immediately
-            // (don't persist a known-bad token), Unreachable → proceed
-            // optimistically. The Unreachable case is important: the
-            // whole reason users use this flow is that their network
-            // can't reliably reach github.com. Blocking the save on
-            // unreachability would defeat the feature for China users.
-            // A bad-but-couldn't-validate token will still surface a
-            // 401 on the first authenticated API call, and the existing
-            // 401 handler will clear it cleanly.
             when (val validation = GitHubAuthApi.validatePersonalAccessToken(trimmed)) {
                 is PatValidation.Valid -> {
                     logger.debug("PAT network-validated against GitHub /user")
@@ -398,17 +432,6 @@ class AuthenticationRepositoryImpl(
             }
         }
 
-    /**
-     * Accepts the two PAT shapes users can create from GitHub's UI:
-     *   - classic:        `ghp_` + ~36 chars
-     *   - fine-grained:   `github_pat_` + ~82 chars
-     *
-     * Deliberately rejects GitHub App / OAuth tokens (`ghs_`, `gho_`,
-     * `ghu_`, `ghr_`) — they can authenticate but have different
-     * expiry/refresh semantics than PATs and would need separate
-     * handling to be safe here. Length check is lenient on purpose so
-     * a future GitHub format bump doesn't silently lock us out.
-     */
     private fun looksLikePat(token: String): Boolean {
         if (token.length < 20) return false
         if (token.any { it.isWhitespace() }) return false
@@ -424,6 +447,11 @@ class AuthenticationRepositoryImpl(
             is BackendHttpException -> statusCode in 500..599
             else -> isNetworkError((message ?: "").lowercase())
         }
+
+    private fun Throwable.isBackendStartFallbackEligible(): Boolean {
+        if (isAuthInfrastructureError()) return true
+        return this is BackendHttpException && statusCode == 429
+    }
 
     private fun isNetworkError(errorMsg: String): Boolean =
         errorMsg.contains("unable to resolve") ||

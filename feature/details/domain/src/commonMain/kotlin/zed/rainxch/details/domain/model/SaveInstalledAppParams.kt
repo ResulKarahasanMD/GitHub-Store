@@ -1,7 +1,7 @@
 package zed.rainxch.details.domain.model
 
-import zed.rainxch.core.domain.model.ApkPackageInfo
-import zed.rainxch.core.domain.model.GithubRepoSummary
+import zed.rainxch.core.domain.model.apk.ApkPackageInfo
+import zed.rainxch.core.domain.model.account.github.GithubRepoSummary
 
 data class SaveInstalledAppParams(
     val repo: GithubRepoSummary,
@@ -14,4 +14,8 @@ data class SaveInstalledAppParams(
     val isFavourite: Boolean,
     val siblingAssetCount: Int,
     val pickedAssetIndex: Int?,
+
+    val pendingInstallFilePath: String? = null,
+
+    val sourceHost: String? = null,
 )

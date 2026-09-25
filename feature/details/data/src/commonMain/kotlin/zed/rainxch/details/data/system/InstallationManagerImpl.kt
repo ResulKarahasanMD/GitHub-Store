@@ -1,14 +1,17 @@
 package zed.rainxch.details.data.system
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
-import zed.rainxch.core.domain.logging.GitHubStoreLogger
-import zed.rainxch.core.domain.model.ApkPackageInfo
-import zed.rainxch.core.domain.model.InstallSource
-import zed.rainxch.core.domain.model.InstalledApp
+import kotlinx.coroutines.flow.first
+import zed.rainxch.core.domain.logging.KomiStoreLogger
+import zed.rainxch.core.domain.model.apk.ApkPackageInfo
+import zed.rainxch.core.domain.model.installation.InstallSource
+import zed.rainxch.core.domain.model.installation.InstalledApp
 import zed.rainxch.core.domain.repository.FavouritesRepository
 import zed.rainxch.core.domain.repository.InstalledAppsRepository
+import zed.rainxch.core.domain.repository.TweaksRepository
 import zed.rainxch.core.domain.system.Installer
-import zed.rainxch.core.domain.util.AssetVariant
+import zed.rainxch.core.domain.utils.AssetVariant
 import zed.rainxch.details.domain.model.ApkValidationResult
 import zed.rainxch.details.domain.model.FingerprintCheckResult
 import zed.rainxch.details.domain.model.SaveInstalledAppParams
@@ -21,7 +24,8 @@ class InstallationManagerImpl(
     private val installer: Installer,
     private val installedAppsRepository: InstalledAppsRepository,
     private val favouritesRepository: FavouritesRepository,
-    private val logger: GitHubStoreLogger,
+    private val tweaksRepository: TweaksRepository,
+    private val logger: KomiStoreLogger,
 ) : InstallationManager {
     override suspend fun validateApk(
         filePath: String,
@@ -65,11 +69,6 @@ class InstallationManagerImpl(
             val apkInfo = params.apkInfo
             val repo = params.repo
 
-            // Capture the user's variant pick as a fingerprint so the next
-            // update resolves to the same APK flavour. Returns null for
-            // single-asset releases or unparseable filenames — in that case
-            // the pin fields stay null and the resolver falls back to the
-            // platform auto-picker, same as before this fix.
             val fingerprint =
                 AssetVariant.fingerprintFromPickedAsset(
                     pickedAssetName = params.assetName,
@@ -78,6 +77,10 @@ class InstallationManagerImpl(
             val serializedTokens = fingerprint?.tokens?.let(AssetVariant::serializeTokens)
             val pickedIndex = params.pickedAssetIndex?.takeIf { it >= 0 }
             val siblingCount = params.siblingAssetCount.takeIf { it > 0 }
+
+            val defaultIncludePreReleases =
+                runCatching { tweaksRepository.getIncludePreReleases().first() }
+                    .getOrDefault(false)
 
             val installedApp =
                 InstalledApp(
@@ -92,10 +95,11 @@ class InstallationManagerImpl(
                     installedVersion = params.releaseTag,
                     installedAssetName = params.assetName,
                     installedAssetUrl = params.assetUrl,
-                    latestVersion = params.releaseTag,
-                    latestAssetName = params.assetName,
-                    latestAssetUrl = params.assetUrl,
-                    latestAssetSize = params.assetSize,
+
+                    latestVersion = null,
+                    latestAssetName = null,
+                    latestAssetUrl = null,
+                    latestAssetSize = null,
                     appName = apkInfo.appName,
                     installSource = InstallSource.THIS_APP,
                     installedAt = System.now().toEpochMilliseconds(),
@@ -109,14 +113,21 @@ class InstallationManagerImpl(
                     isPendingInstall = params.isPendingInstall,
                     installedVersionName = apkInfo.versionName,
                     installedVersionCode = apkInfo.versionCode,
-                    latestVersionName = apkInfo.versionName,
-                    latestVersionCode = apkInfo.versionCode,
+                    latestVersionName = null,
+                    latestVersionCode = null,
                     signingFingerprint = apkInfo.signingFingerprint,
                     preferredAssetVariant = fingerprint?.variant,
                     preferredAssetTokens = serializedTokens,
                     assetGlobPattern = fingerprint?.glob,
                     pickedAssetIndex = pickedIndex,
                     pickedAssetSiblingCount = siblingCount,
+                    includePreReleases = defaultIncludePreReleases,
+                    pendingInstallFilePath = params.pendingInstallFilePath,
+                    pendingInstallVersion =
+                        params.releaseTag.takeIf { params.pendingInstallFilePath != null },
+                    pendingInstallAssetName =
+                        params.assetName.takeIf { params.pendingInstallFilePath != null },
+                    sourceHost = params.sourceHost,
                 )
 
             installedAppsRepository.saveInstalledApp(installedApp)
@@ -133,6 +144,8 @@ class InstallationManagerImpl(
             val reloaded = installedAppsRepository.getAppByPackage(apkInfo.packageName)
             logger.debug("Successfully saved and reloaded app: ${reloaded?.packageName}")
             reloaded
+        } catch (e: CancellationException) {
+            throw e
         } catch (t: Throwable) {
             logger.error("Failed to save installed app to database: ${t.message}")
             t.printStackTrace()

@@ -1,7 +1,7 @@
 package zed.rainxch.core.data.mappers
 
 import zed.rainxch.core.data.local.db.entities.InstalledAppEntity
-import zed.rainxch.core.domain.model.InstalledApp
+import zed.rainxch.core.domain.model.installation.InstalledApp
 
 fun InstalledApp.toEntity(): InstalledAppEntity =
     InstalledAppEntity(
@@ -49,6 +49,8 @@ fun InstalledApp.toEntity(): InstalledAppEntity =
         pendingInstallFilePath = pendingInstallFilePath,
         pendingInstallVersion = pendingInstallVersion,
         pendingInstallAssetName = pendingInstallAssetName,
+        skippedReleaseTag = skippedReleaseTag,
+        sourceHost = sourceHost,
     )
 
 fun InstalledAppEntity.toDomain(): InstalledApp =
@@ -97,4 +99,6 @@ fun InstalledAppEntity.toDomain(): InstalledApp =
         pendingInstallFilePath = pendingInstallFilePath,
         pendingInstallVersion = pendingInstallVersion,
         pendingInstallAssetName = pendingInstallAssetName,
+        skippedReleaseTag = skippedReleaseTag,
+        sourceHost = sourceHost,
     )

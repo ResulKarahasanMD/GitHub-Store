@@ -8,4 +8,5 @@ expect fun InstalledAppIcon(
     packageName: String,
     appName: String,
     modifier: Modifier = Modifier,
+    apkFilePath: String? = null,
 )

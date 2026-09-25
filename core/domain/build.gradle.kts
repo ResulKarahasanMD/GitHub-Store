@@ -14,14 +14,9 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.core)
             }
         }
-
-        androidMain {
+        commonTest {
             dependencies {
-            }
-        }
-
-        jvmMain {
-            dependencies {
+                implementation(kotlin("test"))
             }
         }
     }

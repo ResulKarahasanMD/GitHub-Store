@@ -1,15 +1,22 @@
 package zed.rainxch.details.presentation
 
 import org.jetbrains.compose.resources.StringResource
-import zed.rainxch.core.domain.model.GithubAsset
-import zed.rainxch.core.domain.model.GithubRelease
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
+import zed.rainxch.core.domain.model.account.github.GithubAsset
+import zed.rainxch.core.domain.model.account.github.GithubRelease
 import zed.rainxch.details.domain.model.ReleaseCategory
 import zed.rainxch.details.presentation.model.TranslationTarget
 
 sealed interface DetailsAction {
+    data class OnPlatformChipClick(
+        val platform: DiscoveryPlatform,
+    ) : DetailsAction
+
     data object Retry : DetailsAction
 
     data object RetryReleases : DetailsAction
+
+    data object Refresh : DetailsAction
 
     data object InstallPrimary : DetailsAction
 
@@ -23,6 +30,10 @@ sealed interface DetailsAction {
     data object OnRequestUninstall : DetailsAction
     data object OnDismissUninstallConfirmation : DetailsAction
     data object OnConfirmUninstall : DetailsAction
+
+    data object OnUnlinkExternalApp : DetailsAction
+    data object OnDismissUnlinkConfirmation : DetailsAction
+    data object OnConfirmUnlinkExternalApp : DetailsAction
 
     data class DownloadAsset(
         val downloadUrl: String,
@@ -56,6 +67,8 @@ sealed interface DetailsAction {
 
     data object OnToggleFavorite : DetailsAction
 
+    data object OnToggleStar : DetailsAction
+
     data object OnShareClick : DetailsAction
 
     data object UpdateApp : DetailsAction
@@ -80,6 +93,10 @@ sealed interface DetailsAction {
 
     data object ToggleWhatsNewExpanded : DetailsAction
 
+    data class OnAboutMeasured(val heightPx: Float) : DetailsAction
+
+    data class OnWhatsNewMeasured(val heightPx: Float) : DetailsAction
+
     data class TranslateAbout(
         val targetLanguageCode: String,
     ) : DetailsAction
@@ -98,18 +115,29 @@ sealed interface DetailsAction {
 
     data object DismissLanguagePicker : DetailsAction
 
-    // show release asset picker
     data class SelectDownloadAsset(
         val release: GithubAsset,
     ) : DetailsAction
 
     data object ToggleReleaseAssetsPicker : DetailsAction
 
-    /**
-     * Clears the user's preferred variant pin for the currently-tracked
-     * app. Falls back to the platform auto-picker on subsequent updates.
-     * Triggered by the "Unpin variant" affordance in the asset picker
-     * sheet.
-     */
     data object UnpinPreferredVariant : DetailsAction
+
+    data object ToggleIncludeBetas : DetailsAction
+
+    data object SwitchToStable : DetailsAction
+
+    data object OnInspectApk : DetailsAction
+
+    data object OnDismissApkInspect : DetailsAction
+
+    data object OnAcknowledgeApkInspectCoachmark : DetailsAction
+
+    data object OnAcknowledgeChannelChipCoachmark : DetailsAction
+
+    data class OnToggleShowAllPlatforms(val enabled: Boolean) : DetailsAction
+
+    data class OnDownloadForTransfer(
+        val assetUrl: String,
+    ) : DetailsAction
 }

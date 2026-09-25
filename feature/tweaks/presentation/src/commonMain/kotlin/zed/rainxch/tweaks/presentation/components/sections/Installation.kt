@@ -1,507 +1,478 @@
 package zed.rainxch.tweaks.presentation.components.sections
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.InstallMobile
-import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import org.jetbrains.compose.resources.stringResource
-import zed.rainxch.core.domain.getPlatform
-import zed.rainxch.core.domain.model.InstallerType
-import zed.rainxch.core.domain.model.Platform
-import zed.rainxch.core.domain.model.ShizukuAvailability
-import zed.rainxch.core.presentation.components.ExpressiveCard
+import zed.rainxch.core.domain.isDesktop
+import zed.rainxch.core.domain.model.installation.DhizukuAvailability
+import zed.rainxch.core.domain.model.installation.InstallerAttribution
+import zed.rainxch.core.domain.model.installation.InstallerType
+import zed.rainxch.core.domain.model.installation.PresetKey
+import zed.rainxch.core.domain.model.installation.RootAvailability
+import zed.rainxch.core.domain.model.installation.ShizukuAvailability
+import zed.rainxch.core.presentation.components.buttons.KomiButton
+import zed.rainxch.core.presentation.components.buttons.KomiButtonSize
+import zed.rainxch.core.presentation.components.buttons.KomiButtonVariant
+import zed.rainxch.core.presentation.components.inputs.KomiRadioButton
+import zed.rainxch.core.presentation.components.inputs.KomiSlider
+import zed.rainxch.core.presentation.components.inputs.KomiSwitch
+import zed.rainxch.core.presentation.components.inputs.KomiTextField
+import zed.rainxch.core.presentation.components.text.KomiText
+import zed.rainxch.core.presentation.components.text.KomiTextRole
+import zed.rainxch.core.presentation.locals.LocalPersonality
+import zed.rainxch.core.presentation.locals.LocalStatusColors
 import zed.rainxch.githubstore.core.presentation.res.*
 import zed.rainxch.tweaks.presentation.TweaksAction
 import zed.rainxch.tweaks.presentation.TweaksState
-import zed.rainxch.tweaks.presentation.components.SectionHeader
+import zed.rainxch.tweaks.presentation.components.shell.SettingsDrillRow
+import zed.rainxch.tweaks.presentation.components.shell.SettingsGroup
+import zed.rainxch.tweaks.presentation.components.shell.SettingsRow
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-fun LazyListScope.installationSection(
-    state: TweaksState,
-    onAction: (TweaksAction) -> Unit,
-) {
-    if (getPlatform() != Platform.ANDROID) return
-
-    item {
-        Spacer(Modifier.height(32.dp))
-
-        SectionHeader(
-            text = stringResource(Res.string.section_installation).uppercase()
-        )
-
-        Spacer(Modifier.height(8.dp))
-
-        InstallerTypeCard(
-            selectedType = state.installerType,
-            shizukuAvailability = state.shizukuAvailability,
-            onTypeSelected = { type ->
-                onAction(TweaksAction.OnInstallerTypeSelected(type))
-            },
-            onRequestPermission = {
-                onAction(TweaksAction.OnRequestShizukuPermission)
-            }
-        )
-
-        // Auto-update toggle — only shown when Shizuku is selected and ready
-        if (state.installerType == InstallerType.SHIZUKU &&
-            state.shizukuAvailability == ShizukuAvailability.READY
-        ) {
-            Spacer(Modifier.height(12.dp))
-
-            AutoUpdateCard(
-                enabled = state.autoUpdateEnabled,
-                onToggle = { enabled ->
-                    onAction(TweaksAction.OnAutoUpdateToggled(enabled))
-                }
-            )
-        }
-    }
-}
-
-/**
- * Updates section — always visible on Android (not gated on Shizuku).
- * Shows the update check interval picker so all users can configure
- * how often background update checks run.
- */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-fun LazyListScope.updatesSection(
-    state: TweaksState,
-    onAction: (TweaksAction) -> Unit,
-) {
-    if (getPlatform() != Platform.ANDROID) return
-
-    item {
-        Spacer(Modifier.height(32.dp))
-
-        SectionHeader(
-            text = stringResource(Res.string.section_updates).uppercase()
-        )
-
-        Spacer(Modifier.height(8.dp))
-
-        UpdateCheckIntervalCard(
-            selectedIntervalHours = state.updateCheckIntervalHours,
-            onIntervalSelected = { hours ->
-                onAction(TweaksAction.OnUpdateCheckIntervalChanged(hours))
-            }
-        )
-
-        Spacer(Modifier.height(12.dp))
-
-        PreReleaseToggleCard(
-            enabled = state.includePreReleases,
-            onToggle = { enabled ->
-                onAction(TweaksAction.OnIncludePreReleasesToggled(enabled))
-            }
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun InstallerTypeCard(
-    selectedType: InstallerType,
-    shizukuAvailability: ShizukuAvailability,
-    onTypeSelected: (InstallerType) -> Unit,
-    onRequestPermission: () -> Unit
+fun installSectionContent(
+    state: TweaksState,
+    onAction: (TweaksAction) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    ExpressiveCard {
-        Column(
-            modifier = Modifier
-                .padding(16.dp)
-                .selectableGroup(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            InstallerOption(
-                icon = Icons.Outlined.InstallMobile,
+    if (isDesktop()) return
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SettingsGroup {
+            InstallerTypeRow(
+                type = InstallerType.DEFAULT,
                 title = stringResource(Res.string.installer_type_default),
                 description = stringResource(Res.string.installer_type_default_description),
-                isSelected = selectedType == InstallerType.DEFAULT,
-                onClick = { onTypeSelected(InstallerType.DEFAULT) }
+                selected = state.installerType == InstallerType.DEFAULT,
+                onClick = { onAction(TweaksAction.OnInstallerTypeSelected(InstallerType.DEFAULT)) },
             )
-
-            InstallerOption(
-                icon = Icons.Outlined.Speed,
+            InstallerTypeRow(
+                type = InstallerType.SHIZUKU,
                 title = stringResource(Res.string.installer_type_shizuku),
                 description = stringResource(Res.string.installer_type_shizuku_description),
-                isSelected = selectedType == InstallerType.SHIZUKU,
-                onClick = { onTypeSelected(InstallerType.SHIZUKU) },
-                statusBadge = {
-                    ShizukuStatusBadge(
-                        availability = shizukuAvailability
-                    )
-                }
+                selected = state.installerType == InstallerType.SHIZUKU,
+                onClick = { onAction(TweaksAction.OnInstallerTypeSelected(InstallerType.SHIZUKU)) },
+                badge = { ShizukuStatusBadge(state.shizukuAvailability) },
             )
+            if (state.installerType == InstallerType.SHIZUKU) {
+                ShizukuActions(state.shizukuAvailability) { onAction(TweaksAction.OnRequestShizukuPermission) }
+            }
+            InstallerTypeRow(
+                type = InstallerType.DHIZUKU,
+                title = stringResource(Res.string.installer_type_dhizuku),
+                description = stringResource(Res.string.installer_type_dhizuku_description),
+                selected = state.installerType == InstallerType.DHIZUKU,
+                onClick = { onAction(TweaksAction.OnInstallerTypeSelected(InstallerType.DHIZUKU)) },
+                badge = { DhizukuStatusBadge(state.dhizukuAvailability) },
+            )
+            if (state.installerType == InstallerType.DHIZUKU) {
+                DhizukuActions(state.dhizukuAvailability) { onAction(TweaksAction.OnRequestDhizukuPermission) }
+            }
+            InstallerTypeRow(
+                type = InstallerType.ROOT,
+                title = stringResource(Res.string.installer_type_root),
+                description = stringResource(Res.string.installer_type_root_description),
+                selected = state.installerType == InstallerType.ROOT,
+                onClick = { onAction(TweaksAction.OnInstallerTypeSelected(InstallerType.ROOT)) },
+                badge = { RootStatusBadge(state.rootAvailability) },
+                last = true,
+            )
+            if (state.installerType == InstallerType.ROOT) {
+                RootActions(state.rootAvailability) { onAction(TweaksAction.OnRequestRootPermission) }
+            }
+        }
 
-            when (shizukuAvailability) {
-                ShizukuAvailability.PERMISSION_NEEDED -> {
-                    FilledTonalButton(
-                        onClick = onRequestPermission,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text(
-                            text = stringResource(Res.string.shizuku_grant_permission),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
+        val silentReady =
+            (state.installerType == InstallerType.SHIZUKU && state.shizukuAvailability == ShizukuAvailability.READY) ||
+                (state.installerType == InstallerType.DHIZUKU && state.dhizukuAvailability == DhizukuAvailability.READY) ||
+                (state.installerType == InstallerType.ROOT && state.rootAvailability == RootAvailability.READY)
+        if (silentReady) {
+            SettingsGroup {
+                SettingsRow(
+                    title = stringResource(Res.string.auto_update_title),
+                    subtitle = stringResource(Res.string.auto_update_description),
+                    last = true,
+                    trailing = {
+                        KomiSwitch(
+                            checked = state.autoUpdateEnabled,
+                            onCheckedChange = { onAction(TweaksAction.OnAutoUpdateToggled(it)) },
                         )
-                    }
-                }
-
-                ShizukuAvailability.UNAVAILABLE -> {
-                    HintText(text = stringResource(Res.string.shizuku_install_hint))
-                }
-
-                ShizukuAvailability.NOT_RUNNING -> {
-                    HintText(text = stringResource(Res.string.shizuku_start_hint))
-                }
-
-                ShizukuAvailability.READY -> {
-                    // No hint needed
-                }
+                    },
+                )
+            }
+            SettingsGroup {
+                AttributionRows(state, onAction)
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun InstallerOption(
-    icon: ImageVector,
+fun updatesSectionContent(
+    state: TweaksState,
+    onAction: (TweaksAction) -> Unit,
+    modifier: Modifier = Modifier,
+    onNavigateToSkippedUpdates: () -> Unit,
+) {
+    if (isDesktop()) return
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (state.showBatteryOptimizationCard) {
+            BatteryOptimizationGroup(
+                onOpenSettings = { onAction(TweaksAction.OnOpenBatteryOptimizationSettings) },
+                onDismiss = { onAction(TweaksAction.OnDismissBatteryOptimizationCard) },
+            )
+        }
+        SettingsGroup {
+            SettingsRow(
+                title = stringResource(Res.string.update_check_enabled_title),
+                subtitle = stringResource(Res.string.update_check_enabled_description),
+                trailing = {
+                    KomiSwitch(
+                        checked = state.updateCheckEnabled,
+                        onCheckedChange = { onAction(TweaksAction.OnUpdateCheckEnabledToggled(it)) },
+                    )
+                },
+            )
+            IntervalBlock(
+                selectedIntervalHours = state.updateCheckIntervalHours,
+                enabled = state.updateCheckEnabled,
+                onIntervalSelected = { onAction(TweaksAction.OnUpdateCheckIntervalChanged(it)) },
+            )
+            SettingsRow(
+                title = stringResource(Res.string.include_pre_releases_title),
+                subtitle = stringResource(Res.string.include_pre_releases_description),
+                trailing = {
+                    KomiSwitch(
+                        checked = state.includePreReleases,
+                        onCheckedChange = { onAction(TweaksAction.OnIncludePreReleasesToggled(it)) },
+                    )
+                },
+            )
+            SettingsDrillRow(
+                title = stringResource(Res.string.skipped_updates_entry_title),
+                subtitle = stringResource(Res.string.skipped_updates_entry_description),
+                onClick = onNavigateToSkippedUpdates,
+                last = true,
+            )
+        }
+    }
+}
+
+@Composable
+private fun InstallerTypeRow(
+    type: InstallerType,
     title: String,
     description: String,
-    isSelected: Boolean,
+    selected: Boolean,
     onClick: () -> Unit,
-    statusBadge: (@Composable () -> Unit)? = null
+    badge: (@Composable () -> Unit)? = null,
+    last: Boolean = false,
 ) {
-    val scale by animateFloatAsState(
-        targetValue = if (isSelected) 1.02f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        )
+    SettingsRow(
+        title = title,
+        subtitle = description,
+        last = last,
+        onClick = onClick,
+        trailing = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                badge?.invoke()
+                KomiRadioButton(selected = selected, onClick = onClick)
+            }
+        },
     )
+}
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .scale(scale)
-            .clip(RoundedCornerShape(16.dp))
-            .background(
-                if (isSelected) {
-                    MaterialTheme.colorScheme.primaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surface
-                }
-            )
-            .selectable(
-                selected = isSelected,
-                onClick = onClick,
-                role = Role.RadioButton
-            )
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(
-                    if (isSelected) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerLow
-                    }
-                )
-                .padding(8.dp),
-            tint = if (isSelected) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            }
-        )
-
+@Composable
+private fun AttributionRows(
+    state: TweaksState,
+    onAction: (TweaksAction) -> Unit,
+) {
+    val attribution = state.installerAttribution
+    AttributionRadioRow(
+        title = stringResource(Res.string.installer_attribution_preset_system),
+        selected = attribution is InstallerAttribution.SystemDefault,
+        onClick = { onAction(TweaksAction.OnInstallerAttributionSystemDefault) },
+    )
+    AttributionRadioRow(
+        title = stringResource(Res.string.installer_attribution_preset_playstore),
+        subtitle = "com.android.vending",
+        selected = (attribution as? InstallerAttribution.Preset)?.key == PresetKey.PLAY_STORE,
+        onClick = { onAction(TweaksAction.OnInstallerAttributionPresetSelected(PresetKey.PLAY_STORE)) },
+    )
+    AttributionRadioRow(
+        title = stringResource(Res.string.installer_attribution_preset_fdroid),
+        subtitle = "org.fdroid.fdroid",
+        selected = (attribution as? InstallerAttribution.Preset)?.key == PresetKey.FDROID,
+        onClick = { onAction(TweaksAction.OnInstallerAttributionPresetSelected(PresetKey.FDROID)) },
+    )
+    AttributionRadioRow(
+        title = stringResource(Res.string.installer_attribution_preset_obtainium),
+        subtitle = "dev.imranr.obtainium.app",
+        selected = (attribution as? InstallerAttribution.Preset)?.key == PresetKey.OBTAINIUM,
+        onClick = { onAction(TweaksAction.OnInstallerAttributionPresetSelected(PresetKey.OBTAINIUM)) },
+    )
+    AttributionRadioRow(
+        title = stringResource(Res.string.installer_attribution_preset_custom),
+        subtitle = (attribution as? InstallerAttribution.Custom)?.packageName,
+        selected = attribution is InstallerAttribution.Custom,
+        onClick = { onAction(TweaksAction.OnInstallerAttributionCustomToggleExpanded) },
+        last = !(state.installerAttributionCustomExpanded || attribution is InstallerAttribution.Custom),
+    )
+    if (state.installerAttributionCustomExpanded || attribution is InstallerAttribution.Custom) {
         Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            modifier = Modifier.padding(start = 15.dp, end = 15.dp, bottom = 15.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                color = if (isSelected) {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
-                fontWeight = FontWeight.SemiBold
+            KomiTextField(
+                value = state.installerAttributionCustomDraft,
+                onValueChange = { onAction(TweaksAction.OnInstallerAttributionCustomChanged(it)) },
+                modifier = Modifier.fillMaxWidth(),
+                label = stringResource(Res.string.installer_attribution_custom_label),
+                placeholder = "com.example.installer",
+                error = state.installerAttributionCustomError?.let { stringResource(Res.string.installer_attribution_custom_error) },
             )
-
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodySmall,
-                color = if (isSelected) {
-                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                }
+            KomiButton(
+                onClick = { onAction(TweaksAction.OnInstallerAttributionCustomSave) },
+                label = stringResource(Res.string.installer_attribution_custom_apply),
+                variant = KomiButtonVariant.Tonal,
+                size = KomiButtonSize.Sm,
+                modifier = Modifier.align(Alignment.End),
             )
-        }
-
-        if (statusBadge != null) {
-            statusBadge()
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun ShizukuStatusBadge(
-    availability: ShizukuAvailability
+private fun AttributionRadioRow(
+    title: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    subtitle: String? = null,
+    last: Boolean = false,
 ) {
-    val (color, label) = when (availability) {
-        ShizukuAvailability.READY -> Pair(
-            Color(0xFF4CAF50),
-            stringResource(Res.string.shizuku_status_ready)
-        )
+    SettingsRow(
+        title = title,
+        subtitle = subtitle,
+        last = last,
+        onClick = onClick,
+        trailing = { KomiRadioButton(selected = selected, onClick = onClick) },
+    )
+}
 
-        ShizukuAvailability.PERMISSION_NEEDED -> Pair(
-            Color(0xFFFF9800),
-            stringResource(Res.string.shizuku_status_permission_needed)
-        )
-
-        ShizukuAvailability.NOT_RUNNING -> Pair(
-            Color(0xFFFF5722),
-            stringResource(Res.string.shizuku_status_not_running)
-        )
-
-        ShizukuAvailability.UNAVAILABLE -> Pair(
-            MaterialTheme.colorScheme.outline,
-            stringResource(Res.string.shizuku_status_not_installed)
-        )
+@Composable
+private fun ShizukuActions(availability: ShizukuAvailability, onRequest: () -> Unit) {
+    when (availability) {
+        ShizukuAvailability.PERMISSION_NEEDED ->
+            ActionButton(stringResource(Res.string.shizuku_grant_permission), onRequest)
+        ShizukuAvailability.UNAVAILABLE -> HintRow(stringResource(Res.string.shizuku_install_hint))
+        ShizukuAvailability.NOT_RUNNING -> HintRow(stringResource(Res.string.shizuku_start_hint))
+        ShizukuAvailability.READY -> Unit
     }
+}
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = color,
-            fontWeight = FontWeight.Medium
+@Composable
+private fun DhizukuActions(availability: DhizukuAvailability, onRequest: () -> Unit) {
+    when (availability) {
+        DhizukuAvailability.PERMISSION_NEEDED ->
+            ActionButton(stringResource(Res.string.dhizuku_grant_permission), onRequest)
+        DhizukuAvailability.UNAVAILABLE -> HintRow(stringResource(Res.string.dhizuku_install_hint))
+        DhizukuAvailability.NOT_RUNNING -> HintRow(stringResource(Res.string.dhizuku_start_hint))
+        DhizukuAvailability.READY -> Unit
+    }
+}
+
+@Composable
+private fun RootActions(availability: RootAvailability, onRequest: () -> Unit) {
+    when (availability) {
+        RootAvailability.PERMISSION_NEEDED ->
+            ActionButton(stringResource(Res.string.root_grant_permission), onRequest)
+        RootAvailability.UNAVAILABLE -> HintRow(stringResource(Res.string.root_unavailable_hint))
+        RootAvailability.READY -> Unit
+    }
+}
+
+@Composable
+private fun ActionButton(label: String, onClick: () -> Unit) {
+    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 8.dp)) {
+        KomiButton(
+            onClick = onClick,
+            label = label,
+            variant = KomiButtonVariant.Tonal,
+            size = KomiButtonSize.Sm,
+            fullWidth = true,
         )
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun AutoUpdateCard(
-    enabled: Boolean,
-    onToggle: (Boolean) -> Unit,
-) {
-    ExpressiveCard {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Text(
-                    text = stringResource(Res.string.auto_update_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = stringResource(Res.string.auto_update_description),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = enabled,
-                onCheckedChange = onToggle
-            )
+private fun HintRow(text: String) {
+    KomiText(
+        text = text,
+        role = KomiTextRole.Body,
+        fontSize = 13.sp,
+        color = LocalPersonality.current.colors.onSurfaceVariant,
+        uppercase = false,
+        modifier = Modifier.padding(horizontal = 15.dp, vertical = 6.dp),
+    )
+}
+
+@Composable
+private fun ShizukuStatusBadge(availability: ShizukuAvailability) {
+    val (color, label) =
+        when (availability) {
+            ShizukuAvailability.READY -> LocalStatusColors.current.statusReady to stringResource(Res.string.shizuku_status_ready)
+            ShizukuAvailability.PERMISSION_NEEDED -> LocalStatusColors.current.statusWarning to stringResource(Res.string.shizuku_status_permission_needed)
+            ShizukuAvailability.NOT_RUNNING -> LocalStatusColors.current.statusError to stringResource(Res.string.shizuku_status_not_running)
+            ShizukuAvailability.UNAVAILABLE -> LocalPersonality.current.colors.outline to stringResource(Res.string.shizuku_status_not_installed)
         }
+    StatusDot(color, label)
+}
+
+@Composable
+private fun DhizukuStatusBadge(availability: DhizukuAvailability) {
+    val (color, label) =
+        when (availability) {
+            DhizukuAvailability.READY -> LocalStatusColors.current.statusReady to stringResource(Res.string.dhizuku_status_ready)
+            DhizukuAvailability.PERMISSION_NEEDED -> LocalStatusColors.current.statusWarning to stringResource(Res.string.dhizuku_status_permission_needed)
+            DhizukuAvailability.NOT_RUNNING -> LocalStatusColors.current.statusError to stringResource(Res.string.dhizuku_status_not_running)
+            DhizukuAvailability.UNAVAILABLE -> LocalPersonality.current.colors.outline to stringResource(Res.string.dhizuku_status_not_installed)
+        }
+    StatusDot(color, label)
+}
+
+@Composable
+private fun RootStatusBadge(availability: RootAvailability) {
+    val (color, label) =
+        when (availability) {
+            RootAvailability.READY -> LocalStatusColors.current.statusReady to stringResource(Res.string.root_status_ready)
+            RootAvailability.PERMISSION_NEEDED -> LocalStatusColors.current.statusWarning to stringResource(Res.string.root_status_permission_needed)
+            RootAvailability.UNAVAILABLE -> LocalPersonality.current.colors.outline to stringResource(Res.string.root_status_unavailable)
+        }
+    StatusDot(color, label)
+}
+
+@Composable
+private fun StatusDot(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(modifier = Modifier.size(8.dp).clip(RoundedCornerShape(LocalPersonality.current.shape.cornerSmall)).background(color))
+        KomiText(text = label, role = KomiTextRole.Label, fontSize = 11.sp, color = color, fontWeight = FontWeight.Medium, uppercase = false)
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+private val IntervalStops: List<Long> = listOf(3L, 6L, 12L, 24L, 72L, 168L, 336L, 720L)
+
 @Composable
-private fun UpdateCheckIntervalCard(
+private fun formatIntervalLabel(hours: Long): String {
+    val days = hours / 24
+    return when {
+        hours < 24 -> stringResource(Res.string.interval_every_hours, hours.toInt())
+        hours == 24L -> stringResource(Res.string.interval_daily)
+        hours == 168L -> stringResource(Res.string.interval_weekly)
+        hours == 336L -> stringResource(Res.string.interval_biweekly)
+        hours == 720L -> stringResource(Res.string.interval_monthly)
+        else -> stringResource(Res.string.interval_every_days, days.toInt())
+    }
+}
+
+@Composable
+private fun IntervalBlock(
     selectedIntervalHours: Long,
+    enabled: Boolean,
     onIntervalSelected: (Long) -> Unit,
 ) {
-    val intervals = listOf(
-        3L to Res.string.interval_3h,
-        6L to Res.string.interval_6h,
-        12L to Res.string.interval_12h,
-        24L to Res.string.interval_24h,
-    )
-
-    ExpressiveCard {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Schedule,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer)
-                        .padding(8.dp),
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Text(
-                        text = stringResource(Res.string.update_check_interval_title),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = stringResource(Res.string.update_check_interval_description),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                intervals.forEach { (hours, labelRes) ->
-                    val isSelected = selectedIntervalHours == hours
-
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onIntervalSelected(hours) },
-                        label = {
-                            Text(
-                                text = stringResource(labelRes),
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                            )
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
-                    )
-                }
-            }
-        }
+    val currentIndex =
+        IntervalStops.indexOf(selectedIntervalHours)
+            .let { if (it == -1) IntervalStops.indexOf(IntervalStops.minByOrNull { stop -> kotlin.math.abs(stop - selectedIntervalHours) }) else it }
+            .coerceAtLeast(0)
+    val maxIndex = IntervalStops.lastIndex
+    val colors = LocalPersonality.current.colors
+    Column(modifier = Modifier.padding(start = 15.dp, end = 15.dp, top = 4.dp, bottom = 12.dp)) {
+        KomiText(
+            text = stringResource(Res.string.update_check_interval_title),
+            role = KomiTextRole.Label,
+            color = colors.onSurfaceVariant,
+            uppercase = false,
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(4.dp))
+        KomiText(
+            text = formatIntervalLabel(IntervalStops[currentIndex]),
+            role = KomiTextRole.Title,
+            fontWeight = FontWeight.SemiBold,
+            color = if (enabled) colors.primary else colors.onSurfaceVariant,
+            uppercase = false,
+        )
+        Spacer(Modifier.height(6.dp))
+        KomiSlider(
+            value = currentIndex.toFloat(),
+            onValueChange = { v -> onIntervalSelected(IntervalStops[v.toInt().coerceIn(0, maxIndex)]) },
+            steps = maxIndex - 1,
+            valueRange = 0f..maxIndex.toFloat(),
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun PreReleaseToggleCard(
-    enabled: Boolean,
-    onToggle: (Boolean) -> Unit,
+private fun BatteryOptimizationGroup(
+    onOpenSettings: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
-    ExpressiveCard {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Text(
-                    text = stringResource(Res.string.include_pre_releases_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.SemiBold
+    val colors = LocalPersonality.current.colors
+    SettingsGroup {
+        Column(modifier = Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            KomiText(
+                text = stringResource(Res.string.battery_optimization_card_title),
+                role = KomiTextRole.Title,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onSurface,
+                uppercase = false,
+            )
+            KomiText(
+                text = stringResource(Res.string.battery_optimization_card_description),
+                role = KomiTextRole.Body,
+                fontSize = 13.sp,
+                color = colors.onSurfaceVariant,
+                uppercase = false,
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                KomiButton(
+                    onClick = onDismiss,
+                    label = stringResource(Res.string.battery_optimization_card_dismiss),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
                 )
-                Text(
-                    text = stringResource(Res.string.include_pre_releases_description),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                KomiButton(
+                    onClick = onOpenSettings,
+                    label = stringResource(Res.string.battery_optimization_card_open),
+                    variant = KomiButtonVariant.Tonal,
+                    size = KomiButtonSize.Sm,
                 )
             }
-            Switch(
-                checked = enabled,
-                onCheckedChange = onToggle
-            )
         }
     }
-}
-
-@Composable
-private fun HintText(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 8.dp, top = 4.dp)
-    )
 }

@@ -12,6 +12,7 @@ actual fun InstalledAppIcon(
     packageName: String,
     appName: String,
     modifier: Modifier,
+    apkFilePath: String?,
 ) {
     Image(
         painter = painterResource(Res.drawable.app_icon),

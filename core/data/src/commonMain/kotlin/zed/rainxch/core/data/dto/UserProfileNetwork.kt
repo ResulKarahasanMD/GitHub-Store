@@ -18,4 +18,8 @@ data class UserProfileNetwork(
     @SerialName("company") val company: String? = null,
     @SerialName("blog") val blog: String? = null,
     @SerialName("twitter_username") val twitterUsername: String? = null,
+    @SerialName("email") val email: String? = null,
+    @SerialName("public_gists") val publicGists: Int? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
 )

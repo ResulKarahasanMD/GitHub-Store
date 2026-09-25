@@ -15,6 +15,12 @@ sealed interface TweaksEvent {
         val message: String,
     ) : TweaksEvent
 
+    data class OnMasterProxyTestResult(
+        val searchMs: Long?,
+        val downloadMs: Long?,
+        val translationMs: Long?,
+    ) : TweaksEvent
+
     data object OnCacheCleared : TweaksEvent
 
     data class OnCacheClearError(
@@ -23,19 +29,15 @@ sealed interface TweaksEvent {
 
     data object OnSeenHistoryCleared : TweaksEvent
 
-    data object OnAnalyticsIdReset : TweaksEvent
-
     data object OnTranslationProviderSaved : TweaksEvent
 
     data object OnYoudaoCredentialsSaved : TweaksEvent
 
-    /**
-     * Fired on platforms where changing the UI language cannot be
-     * applied in-place (currently Desktop — no `Activity.recreate()`
-     * equivalent). The UI prompts the user to restart so the new
-     * locale takes effect on the next cold start. On Android this
-     * event is never emitted; `MainActivity` handles runtime changes
-     * via `recreate()` directly.
-     */
+    data object OnLibreTranslateCredentialsSaved : TweaksEvent
+
+    data object OnDeeplCredentialsSaved : TweaksEvent
+
+    data object OnMicrosoftTranslatorCredentialsSaved : TweaksEvent
+
     data object OnAppLanguageChangeRequiresRestart : TweaksEvent
 }

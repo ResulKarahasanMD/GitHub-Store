@@ -27,47 +27,82 @@ import zed.rainxch.core.data.cache.CacheManager
 import zed.rainxch.core.data.cache.CacheManager.CacheTtl.HOME_REPOS
 import zed.rainxch.core.data.dto.GithubRepoNetworkModel
 import zed.rainxch.core.data.dto.GithubRepoSearchResponse
+import zed.rainxch.core.data.dto.RepoByIdNetwork
+import zed.rainxch.core.domain.model.account.github.GithubUser
 import zed.rainxch.core.data.mappers.toSummary
 import zed.rainxch.core.data.network.GitHubClientProvider
 import zed.rainxch.core.data.network.executeRequest
-import zed.rainxch.core.domain.logging.GitHubStoreLogger
-import zed.rainxch.core.domain.model.DiscoveryPlatform
-import zed.rainxch.core.domain.model.GithubRepoSummary
-import zed.rainxch.core.domain.model.PaginatedDiscoveryRepositories
-import zed.rainxch.core.domain.model.Platform
-import zed.rainxch.core.domain.model.RateLimitException
+import zed.rainxch.core.domain.logging.KomiStoreLogger
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
+import zed.rainxch.core.domain.model.account.github.GithubRepoSummary
+import zed.rainxch.core.domain.model.repository.PaginatedDiscoveryRepositories
+import zed.rainxch.core.domain.model.system.Platform
+import zed.rainxch.core.domain.model.error.RateLimitException
 import zed.rainxch.home.data.data_source.CachedRepositoriesDataSource
+import zed.rainxch.home.data.dto.CachedRepoResponse
 import zed.rainxch.home.data.mappers.toGithubRepoSummary
 import zed.rainxch.home.domain.repository.HomeRepository
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.ExperimentalTime
 
 class HomeRepositoryImpl(
     private val clientProvider: GitHubClientProvider,
     private val devicePlatform: Platform,
     private val cachedDataSource: CachedRepositoriesDataSource,
-    private val logger: GitHubStoreLogger,
+    private val logger: KomiStoreLogger,
     private val cacheManager: CacheManager,
 ) : HomeRepository {
     private val httpClient: HttpClient get() = clientProvider.client
 
     private fun cacheKey(
         category: String,
-        requestedPlatform: DiscoveryPlatform,
+        requestedPlatforms: Set<DiscoveryPlatform>,
         page: Int,
-    ): String = "home:$category:${requestedPlatform.name}:page$page"
+    ): String {
+        val effective = requestedPlatforms.normalize()
+        val token =
+            if (effective.isEmpty()) {
+                "all"
+            } else {
+                effective.map { it.name }.sorted().joinToString(separator = "+")
+            }
+        return "home:$category:$token:page$page"
+    }
+
+    private suspend fun loadCachedReposForSet(
+        platforms: Set<DiscoveryPlatform>,
+        fetchSingle: suspend (DiscoveryPlatform) -> CachedRepoResponse?,
+    ): CachedRepoResponse? {
+        val effective = platforms.normalize()
+        return when (effective.size) {
+            0 -> fetchSingle(DiscoveryPlatform.All)
+            1 -> fetchSingle(effective.first())
+            else ->
+                fetchSingle(DiscoveryPlatform.All)?.let { response ->
+                    response.copy(
+                        repositories =
+                            response.repositories.filter { repo ->
+                                repo.availablePlatforms.any { it in effective }
+                            },
+                    )
+                }
+        }
+    }
 
     @OptIn(ExperimentalTime::class)
     override fun getTrendingRepositories(
-        platform: DiscoveryPlatform,
+        platforms: Set<DiscoveryPlatform>,
         page: Int,
     ): Flow<PaginatedDiscoveryRepositories> =
         flow {
             if (page == 1) {
                 logger.debug("Attempting to load cached trending repositories...")
 
-                val cachedData = cachedDataSource.getCachedTrendingRepos(platform)
+                val cachedData = loadCachedReposForSet(platforms) {
+                    cachedDataSource.getCachedTrendingRepos(it)
+                }
 
                 if (cachedData != null && cachedData.repositories.isNotEmpty()) {
                     logger.debug("Using mirror cached data: ${cachedData.repositories.size} repos")
@@ -84,7 +119,7 @@ class HomeRepositoryImpl(
                         key =
                             cacheKey(
                                 category = "trending",
-                                requestedPlatform = platform,
+                                requestedPlatforms = platforms,
                                 page = page,
                             ),
                         value = result,
@@ -101,7 +136,7 @@ class HomeRepositoryImpl(
                 cacheManager.get<PaginatedDiscoveryRepositories>(
                     cacheKey(
                         category = "trending",
-                        requestedPlatform = platform,
+                        requestedPlatforms = platforms,
                         page = page,
                     ),
                 )
@@ -120,7 +155,7 @@ class HomeRepositoryImpl(
 
             emitAll(
                 searchReposWithInstallersFlow(
-                    platform = platform,
+                    platforms = platforms,
                     baseQuery = "stars:>50 archived:false pushed:>=$thirtyDaysAgo",
                     sort = "stars",
                     order = "desc",
@@ -132,14 +167,16 @@ class HomeRepositoryImpl(
 
     @OptIn(ExperimentalTime::class)
     override fun getHotReleaseRepositories(
-        platform: DiscoveryPlatform,
+        platforms: Set<DiscoveryPlatform>,
         page: Int,
     ): Flow<PaginatedDiscoveryRepositories> =
         flow {
             if (page == 1) {
                 logger.debug("Attempting to load cached hot release repositories...")
 
-                val cachedData = cachedDataSource.getCachedHotReleaseRepos(platform)
+                val cachedData = loadCachedReposForSet(platforms) {
+                    cachedDataSource.getCachedHotReleaseRepos(it)
+                }
 
                 if (cachedData != null && cachedData.repositories.isNotEmpty()) {
                     logger.debug("Using mirror cached data: ${cachedData.repositories.size} repos")
@@ -156,7 +193,7 @@ class HomeRepositoryImpl(
                         key =
                             cacheKey(
                                 category = "hot_release",
-                                requestedPlatform = platform,
+                                requestedPlatforms = platforms,
                                 page = page,
                             ),
                         value = result,
@@ -173,7 +210,7 @@ class HomeRepositoryImpl(
                 cacheManager.get<PaginatedDiscoveryRepositories>(
                     cacheKey(
                         category = "hot_release",
-                        requestedPlatform = platform,
+                        requestedPlatforms = platforms,
                         page = page,
                     ),
                 )
@@ -192,7 +229,7 @@ class HomeRepositoryImpl(
 
             emitAll(
                 searchReposWithInstallersFlow(
-                    platform = platform,
+                    platforms = platforms,
                     baseQuery = "stars:>10 archived:false pushed:>=$fourteenDaysAgo",
                     sort = "updated",
                     order = "desc",
@@ -204,14 +241,16 @@ class HomeRepositoryImpl(
 
     @OptIn(ExperimentalTime::class)
     override fun getMostPopular(
-        platform: DiscoveryPlatform,
+        platforms: Set<DiscoveryPlatform>,
         page: Int,
     ): Flow<PaginatedDiscoveryRepositories> =
         flow {
             if (page == 1) {
                 logger.debug("Attempting to load cached most popular repositories...")
 
-                val cachedData = cachedDataSource.getCachedMostPopularRepos(platform)
+                val cachedData = loadCachedReposForSet(platforms) {
+                    cachedDataSource.getCachedMostPopularRepos(it)
+                }
 
                 if (cachedData != null && cachedData.repositories.isNotEmpty()) {
                     logger.debug("Using mirror cached data: ${cachedData.repositories.size} repos")
@@ -224,7 +263,7 @@ class HomeRepositoryImpl(
                             hasMore = false,
                             nextPageIndex = 2,
                         )
-                    cacheManager.put(cacheKey("most_popular", platform, page), result, HOME_REPOS)
+                    cacheManager.put(cacheKey("most_popular", platforms, page), result, HOME_REPOS)
                     emit(result)
                     return@flow
                 } else {
@@ -236,7 +275,7 @@ class HomeRepositoryImpl(
                 cacheManager.get<PaginatedDiscoveryRepositories>(
                     cacheKey(
                         category = "most_popular",
-                        requestedPlatform = platform,
+                        requestedPlatforms = platforms,
                         page = page,
                     ),
                 )
@@ -262,7 +301,7 @@ class HomeRepositoryImpl(
 
             emitAll(
                 searchReposWithInstallersFlow(
-                    platform = platform,
+                    platforms = platforms,
                     baseQuery = "stars:>1000 archived:false created:<$sixMonthsAgo pushed:>=$oneYearAgo",
                     sort = "stars",
                     order = "desc",
@@ -274,10 +313,12 @@ class HomeRepositoryImpl(
 
     override fun getTopicRepositories(
         topic: zed.rainxch.home.domain.model.TopicCategory,
-        platform: DiscoveryPlatform,
+        platforms: Set<DiscoveryPlatform>,
     ): Flow<PaginatedDiscoveryRepositories> =
         flow {
-            val cachedData = cachedDataSource.getCachedTopicRepos(topic, platform)
+            val cachedData = loadCachedReposForSet(platforms) {
+                cachedDataSource.getCachedTopicRepos(topic, it)
+            }
 
             if (cachedData != null && cachedData.repositories.isNotEmpty()) {
                 logger.debug("Using cached topic data for ${topic.name}: ${cachedData.repositories.size} repos")
@@ -295,7 +336,7 @@ class HomeRepositoryImpl(
 
     override fun searchByTopic(
         searchKeywords: String,
-        platform: DiscoveryPlatform,
+        platforms: Set<DiscoveryPlatform>,
         page: Int,
     ): Flow<PaginatedDiscoveryRepositories> =
         flow {
@@ -304,7 +345,7 @@ class HomeRepositoryImpl(
                 cacheManager.get<PaginatedDiscoveryRepositories>(
                     cacheKey(
                         category = cacheCategory,
-                        requestedPlatform = platform,
+                        requestedPlatforms = platforms,
                         page = page,
                     ),
                 )
@@ -316,7 +357,7 @@ class HomeRepositoryImpl(
 
             emitAll(
                 searchReposWithInstallersFlow(
-                    platform = platform,
+                    platforms = platforms,
                     baseQuery = "$searchKeywords in:name,description,topics stars:>10 archived:false",
                     sort = "stars",
                     order = "desc",
@@ -327,7 +368,7 @@ class HomeRepositoryImpl(
         }.flowOn(Dispatchers.IO)
 
     private fun searchReposWithInstallersFlow(
-        platform: DiscoveryPlatform,
+        platforms: Set<DiscoveryPlatform>,
         baseQuery: String,
         sort: String,
         order: String,
@@ -344,7 +385,7 @@ class HomeRepositoryImpl(
             var pagesFetchedCount = 0
             var lastEmittedCount = 0
 
-            val query = buildSimplifiedQuery(baseQuery, platform)
+            val query = buildSimplifiedQuery(baseQuery, platforms)
             logger.debug("Query: $query | Sort: $sort | Page: $startPage")
 
             while (results.size < desiredCount && pagesFetchedCount < maxPagesToFetch) {
@@ -387,7 +428,7 @@ class HomeRepositoryImpl(
                             candidates.map { repo ->
                                 async {
                                     semaphore.withPermit {
-                                        withTimeoutOrNull(5000) {
+                                        withTimeoutOrNull(5000.milliseconds) {
                                             checkRepoHasInstallers(repo)
                                         }
                                     }
@@ -479,7 +520,7 @@ class HomeRepositoryImpl(
                     key =
                         cacheKey(
                             category = category,
-                            requestedPlatform = platform,
+                            requestedPlatforms = platforms,
                             page = startPage,
                         ),
                     value = allResults,
@@ -491,18 +532,38 @@ class HomeRepositoryImpl(
 
     private fun buildSimplifiedQuery(
         baseQuery: String,
-        requestedPlatform: DiscoveryPlatform,
+        requestedPlatforms: Set<DiscoveryPlatform>,
     ): String {
-        val topic =
-            when (requestedPlatform) {
-                DiscoveryPlatform.All -> null
-                DiscoveryPlatform.Android -> "android"
-                DiscoveryPlatform.Windows -> "desktop"
-                DiscoveryPlatform.Macos -> "macos"
-                DiscoveryPlatform.Linux -> "linux"
-            }
+        val effective = requestedPlatforms.normalize()
+        if (effective.isEmpty()) return baseQuery
 
-        return if (topic == null) baseQuery else "$baseQuery topic:$topic"
+        val topics =
+            effective
+                .mapNotNull { it.toQueryTopic() }
+                .distinct()
+
+        return when {
+            topics.isEmpty() -> baseQuery
+            topics.size == 1 -> "$baseQuery topic:${topics.first()}"
+
+            else -> topics.joinToString(separator = " OR ") { "($baseQuery topic:$it)" }
+        }
+    }
+
+    private fun DiscoveryPlatform.toQueryTopic(): String? =
+        when (this) {
+            DiscoveryPlatform.All -> null
+            DiscoveryPlatform.Android -> "android"
+            DiscoveryPlatform.Windows -> "desktop"
+            DiscoveryPlatform.Macos -> "macos"
+            DiscoveryPlatform.Ios -> "ios"
+            DiscoveryPlatform.Linux -> "linux"
+        }
+
+    private fun Set<DiscoveryPlatform>.normalize(): Set<DiscoveryPlatform> {
+        if (contains(DiscoveryPlatform.All)) return emptySet()
+        val real = filter { it != DiscoveryPlatform.All }.toSet()
+        return if (real.size == DiscoveryPlatform.entries.size) emptySet() else real
     }
 
     private fun calculatePlatformScore(repo: GithubRepoNetworkModel): Int {
@@ -590,6 +651,8 @@ class HomeRepositoryImpl(
             } else {
                 null
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
@@ -606,5 +669,48 @@ class HomeRepositoryImpl(
     @Serializable
     private data class AssetNetworkModel(
         val name: String,
+    )
+
+    override suspend fun getRepositoryById(id: Long): GithubRepoSummary? {
+        val cacheKey = "home:repo_id:$id"
+        cacheManager.get<GithubRepoSummary>(cacheKey)?.let { return it }
+        return try {
+            val result = httpClient
+                .executeRequest<RepoByIdNetwork> {
+                    get("/repositories/$id") {
+                        header("Accept", "application/vnd.github+json")
+                    }
+                }.getOrThrow()
+                .toSummary()
+            cacheManager.put(cacheKey, result, HOME_REPOS)
+            result
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            cacheManager.getStale<GithubRepoSummary>(cacheKey)?.let { return it }
+            logger.warn("getRepositoryById($id) failed: ${e.message}")
+            null
+        }
+    }
+
+    private fun RepoByIdNetwork.toSummary(): GithubRepoSummary = GithubRepoSummary(
+        id = id,
+        name = name,
+        fullName = fullName,
+        owner = GithubUser(
+            id = owner.id,
+            login = owner.login,
+            avatarUrl = owner.avatarUrl,
+            htmlUrl = owner.htmlUrl,
+        ),
+        description = description,
+        defaultBranch = defaultBranch,
+        htmlUrl = htmlUrl,
+        stargazersCount = stars,
+        forksCount = forks,
+        language = language,
+        topics = topics.orEmpty(),
+        releasesUrl = "https://api.github.com/repos/$fullName/releases{/id}",
+        updatedAt = updatedAt,
     )
 }

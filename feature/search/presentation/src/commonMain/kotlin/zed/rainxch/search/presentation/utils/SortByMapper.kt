@@ -10,4 +10,6 @@ fun SortByUi.label(): StringResource =
         MostStars -> Res.string.sort_most_stars
         MostForks -> Res.string.sort_most_forks
         BestMatch -> Res.string.sort_best_match
+        RecentlyUpdated -> Res.string.sort_recently_updated
+        RecentlyReleased -> Res.string.sort_recently_released
     }

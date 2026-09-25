@@ -6,15 +6,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.BasicAlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import zed.rainxch.core.presentation.components.buttons.KomiButton
+import zed.rainxch.core.presentation.components.buttons.KomiButtonSize
+import zed.rainxch.core.presentation.components.buttons.KomiButtonVariant
+import zed.rainxch.core.presentation.components.overlays.KomiDialog
+import zed.rainxch.core.presentation.components.text.KomiText
+import zed.rainxch.core.presentation.components.text.KomiTextRole
+import zed.rainxch.core.presentation.locals.LocalPersonality
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -24,7 +24,6 @@ import androidx.compose.ui.window.DialogProperties
 import org.jetbrains.compose.resources.stringResource
 import zed.rainxch.githubstore.core.presentation.res.*
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ClearDownloadsDialog(
     cacheSize: String,
@@ -32,7 +31,8 @@ fun ClearDownloadsDialog(
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    BasicAlertDialog(
+    val colors = LocalPersonality.current.colors
+    KomiDialog(
         onDismissRequest = onDismissRequest,
         properties =
             DialogProperties(
@@ -42,24 +42,25 @@ fun ClearDownloadsDialog(
         modifier =
             modifier
                 .padding(16.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .padding(16.dp),
+                .clip(RoundedCornerShape(LocalPersonality.current.shape.corner))
+                .background(colors.surfaceContainer)
+                .padding(20.dp),
     ) {
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
+            KomiText(
                 text = stringResource(Res.string.delete_downloads_confirmation_title),
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface,
+                role = KomiTextRole.Title,
+                color = colors.onSurface,
                 fontWeight = FontWeight.Bold,
             )
 
-            Text(
+            KomiText(
                 text = stringResource(Res.string.delete_downloads_confirmation_message, cacheSize),
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                role = KomiTextRole.Body,
+                color = colors.onSurfaceVariant,
+                uppercase = false,
             )
 
             Row(
@@ -67,30 +68,19 @@ fun ClearDownloadsDialog(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
-                TextButton(
+                KomiButton(
                     onClick = onDismissRequest,
-                ) {
-                    Text(
-                        text = stringResource(Res.string.cancel),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
+                    label = stringResource(Res.string.cancel),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
 
-                Button(
+                KomiButton(
                     onClick = onConfirm,
-                    colors =
-                        ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer,
-                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                        ),
-                ) {
-                    Text(
-                        text = stringResource(Res.string.delete_all),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                    )
-                }
+                    label = stringResource(Res.string.delete_all),
+                    variant = KomiButtonVariant.Destructive,
+                    size = KomiButtonSize.Sm,
+                )
             }
         }
     }

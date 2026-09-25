@@ -4,60 +4,75 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import eu.anifantakis.lib.ksafe.KSafe
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import zed.rainxch.core.data.data_source.TokenStore
 import zed.rainxch.core.data.dto.GithubDeviceTokenSuccessDto
 import kotlin.time.Clock
+import zed.rainxch.core.data.secure.safeDelete
+import zed.rainxch.core.data.secure.safeGet
+import zed.rainxch.core.data.secure.safeGetFlow
+import zed.rainxch.core.data.secure.safePut
 
 class DefaultTokenStore(
-    private val dataStore: DataStore<Preferences>,
+    private val ksafe: KSafe,
+    private val legacyDataStore: DataStore<Preferences>,
 ) : TokenStore {
-    private val TOKEN_KEY = stringPreferencesKey("token")
+    private val tokenKey = TOKEN_KEY_NAME
+    private val legacyKey = stringPreferencesKey("token")
     private val json = Json { ignoreUnknownKeys = true }
 
-    override suspend fun save(token: GithubDeviceTokenSuccessDto) {
-        val stamped =
-            token.copy(
-                savedAtEpochMillis = token.savedAtEpochMillis ?: Clock.System.now().toEpochMilliseconds(),
-            )
-        val jsonString = json.encodeToString(GithubDeviceTokenSuccessDto.serializer(), stamped)
-        dataStore.edit { preferences ->
-            preferences[TOKEN_KEY] = jsonString
+    private val migrationLock = Mutex()
+    private val migrationDeferred = CompletableDeferred<Unit>()
+    private val migrationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    init {
+        migrationScope.launch {
+            runCatching { migrateIfNeeded() }
+            migrationDeferred.complete(Unit)
         }
     }
 
-    override fun tokenFlow(): Flow<GithubDeviceTokenSuccessDto?> {
-        return dataStore.data.map { preferences ->
-            val raw = preferences[TOKEN_KEY] ?: return@map null
-            runCatching {
-                json.decodeFromString(GithubDeviceTokenSuccessDto.serializer(), raw)
-            }.getOrNull()
-        }
+    override suspend fun save(token: GithubDeviceTokenSuccessDto) {
+        migrationDeferred.await()
+        val stamped = token.copy(
+            savedAtEpochMillis = token.savedAtEpochMillis ?: Clock.System.now().toEpochMilliseconds(),
+        )
+        ksafe.safePut(tokenKey, stamped)
+    }
+
+    override fun tokenFlow(): Flow<GithubDeviceTokenSuccessDto?> = flow {
+        migrationDeferred.await()
+        emitAll(ksafe.safeGetFlow<GithubDeviceTokenSuccessDto?>(tokenKey, null))
     }
 
     override suspend fun currentToken(): GithubDeviceTokenSuccessDto? {
-        val preferences = dataStore.data.first()
-        val raw = preferences[TOKEN_KEY] ?: return null
+        migrationDeferred.await()
         return runCatching {
-            json.decodeFromString(GithubDeviceTokenSuccessDto.serializer(), raw)
+            ksafe.safeGet<GithubDeviceTokenSuccessDto?>(tokenKey, null)
         }.getOrNull()
     }
 
     override fun blockingCurrentToken(): GithubDeviceTokenSuccessDto? =
-        runBlocking {
-            val preferences = dataStore.data.first()
-            val raw = preferences[TOKEN_KEY] ?: return@runBlocking null
-            runCatching {
-                json.decodeFromString(GithubDeviceTokenSuccessDto.serializer(), raw)
-            }.getOrNull()
-        }
+        runBlocking { currentToken() }
 
     override suspend fun clear() {
-        dataStore.edit { it.remove(TOKEN_KEY) }
+        migrationDeferred.await()
+
+        ksafe.safeDelete(tokenKey)
+        runCatching { legacyDataStore.edit { it.remove(legacyKey) } }
     }
 
     override suspend fun isTokenExpired(): Boolean {
@@ -66,5 +81,34 @@ class DefaultTokenStore(
         val expiresIn = token.expiresIn ?: return false
         val expiresAtMillis = savedAt + (expiresIn * 1000L)
         return Clock.System.now().toEpochMilliseconds() > expiresAtMillis
+    }
+
+    private suspend fun migrateIfNeeded() = migrationLock.withLock {
+        val existing = runCatching {
+            ksafe.safeGet<GithubDeviceTokenSuccessDto?>(tokenKey, null)
+        }.getOrNull()
+        if (existing != null) return@withLock
+
+        val legacyRaw = runCatching {
+            legacyDataStore.data.first()[legacyKey]
+        }.getOrNull() ?: return@withLock
+
+        val parsed = runCatching {
+            json.decodeFromString(GithubDeviceTokenSuccessDto.serializer(), legacyRaw)
+        }.getOrNull() ?: run {
+
+            return@withLock
+        }
+
+        val putOk = ksafe.safePut(tokenKey, parsed)
+        if (!putOk) {
+
+            return@withLock
+        }
+        runCatching { legacyDataStore.edit { it.remove(legacyKey) } }
+    }
+
+    private companion object {
+        const val TOKEN_KEY_NAME = "github_token"
     }
 }

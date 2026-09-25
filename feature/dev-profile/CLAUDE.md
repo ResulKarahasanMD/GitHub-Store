@@ -1,35 +1,19 @@
-# CLAUDE.md - Developer Profile Feature
+# Dev Profile Feature
 
-## Purpose
+GitHub user/dev profile view — avatar, bio, stats, their repos with filter/sort, followers/following. Reached from any repository card.
 
-Displays a GitHub developer/user profile. Shows user info (avatar, bio, stats), their repositories with filtering and sorting, and follower/following counts. Reached by clicking on a developer's name from any repository card.
-
-## Module Structure
+## Structure
 
 ```
 feature/dev-profile/
-├── domain/
-│   ├── model/
-│   │   ├── DeveloperProfile.kt       # User profile data model
-│   │   ├── DeveloperRepository.kt    # User's repository model
-│   │   ├── RepoFilterType.kt         # Filter: All, Sources, Forks, etc.
-│   │   └── RepoSortType.kt           # Sort: Stars, Name, Updated, etc.
-│   └── repository/DeveloperProfileRepository.kt  # Profile + repos
-├── data/
-│   ├── di/SharedModule.kt            # Koin: devProfileModule
-│   ├── repository/DeveloperProfileRepositoryImpl.kt
-│   ├── dto/                           # Network DTOs
-│   └── mappers/                       # DTO → domain model mappers
+├── domain/   # DeveloperProfileRepository; DeveloperProfile, DeveloperRepository, RepoFilterType (All/Sources/Forks/…), RepoSortType (Stars/Name/Updated/…)
+├── data/     # impl + dto + mappers + di
 └── presentation/
-    ├── DeveloperProfileViewModel.kt   # Profile loading, repo filtering/sorting
-    ├── DeveloperProfileState.kt       # profile, repos, filters, loading
-    ├── DeveloperProfileAction.kt      # Load, filter, sort, click actions
-    ├── DeveloperProfileEvent.kt       # One-off events
-    ├── DeveloperProfileRoot.kt        # Main composable
-    └── components/                    # Profile header, repo list, filter controls
+    ├── DeveloperProfileViewModel / State / Action / Event / Root
+    └── components/  profile header, repo list, filter controls
 ```
 
-## Key Interfaces
+## Key interface
 
 ```kotlin
 interface DeveloperProfileRepository {
@@ -40,11 +24,11 @@ interface DeveloperProfileRepository {
 
 ## Navigation
 
-Route: `GithubStoreGraph.DeveloperProfileScreen(username: String)`
+`GithubStoreGraph.DeveloperProfileScreen(username: String)`.
 
-## Implementation Notes
+## Notes
 
-- Profile and repos are fetched in parallel on load
-- Client-side filtering by `RepoFilterType` (All, Sources, Forks) and sorting by `RepoSortType` (Stars, Name, Updated)
-- Both API calls return `Result<T>` for error handling
-- Reached from repository cards throughout the app (home, search, details, favourites, starred)
+- Profile + repos fetched in parallel.
+- Client-side filter/sort.
+- Both API calls return `Result<T>`.
+- Reached from cards throughout app (home/search/details/favourites/starred).

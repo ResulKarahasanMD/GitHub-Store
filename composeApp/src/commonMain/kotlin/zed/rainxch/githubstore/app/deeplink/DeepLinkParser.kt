@@ -1,21 +1,5 @@
 package zed.rainxch.githubstore.app.deeplink
 
-sealed interface DeepLinkDestination {
-    data class Repository(
-        val owner: String,
-        val repo: String,
-    ) : DeepLinkDestination
-
-    /**
-     * Deep link to the apps tab. Used by the pending-install
-     * notification to bring the user back to the row where they can
-     * complete a deferred install.
-     */
-    data object Apps : DeepLinkDestination
-
-    data object None : DeepLinkDestination
-}
-
 object DeepLinkParser {
     private val INVALID_CHARS = setOf('/', '\\', '?', '#', '@', ':', '*', '"', '<', '>', '|', '%', '&', '=')
 
@@ -57,14 +41,20 @@ object DeepLinkParser {
             "team",
         )
 
+    private val BASE64URL_RE = Regex("^[A-Za-z0-9_-]+$")
+
     fun parse(uri: String): DeepLinkDestination {
         return when {
-            // Pending-install notification opens the apps tab. No path
-            // segments — the deferred install is keyed by package name
-            // on the row itself, so the link only needs to bring the
-            // user to the right tab.
+            uri == "githubstore://home" || uri == "githubstore://home/" -> {
+                DeepLinkDestination.Home
+            }
+
             uri == "githubstore://apps" || uri == "githubstore://apps/" || uri.startsWith("githubstore://apps?") -> {
                 DeepLinkDestination.Apps
+            }
+
+            uri.startsWith("githubstore://auth?") || uri.startsWith("githubstore://auth/?") -> {
+                parseAuthCallback(uri)
             }
 
             uri.startsWith("githubstore://repo/") -> {
@@ -92,6 +82,34 @@ object DeepLinkParser {
                 DeepLinkDestination.None
             }
 
+            uri == "githubstore://tweaks/feedback" || uri == "githubstore://feedback" -> {
+                DeepLinkDestination.Feedback
+            }
+
+            uri == "githubstore://tweaks" || uri == "githubstore://tweaks/" -> {
+                DeepLinkDestination.Tweaks
+            }
+
+            uri == "githubstore://about" || uri == "githubstore://tweaks/app-info" -> {
+                DeepLinkDestination.About
+            }
+
+            uri == "githubstore://tweaks/licenses" -> {
+                DeepLinkDestination.TweaksLicenses
+            }
+
+            uri == "githubstore://search" || uri == "githubstore://search/" -> {
+                DeepLinkDestination.Search
+            }
+
+            uri == "githubstore://favourites" || uri == "githubstore://favourites/" -> {
+                DeepLinkDestination.Favourites
+            }
+
+            uri == "githubstore://recent" || uri == "githubstore://recent/" -> {
+                DeepLinkDestination.RecentlyViewed
+            }
+
             uri.startsWith("https://github-store.org/app/") -> {
                 extractQueryParam(uri, "repo")?.let { encodedRepoParam ->
                     val decoded = urlDecode(encodedRepoParam)
@@ -105,10 +123,6 @@ object DeepLinkParser {
         }
     }
 
-    /**
-     * URL-decode a string, handling percent-encoded characters.
-     * Returns the original string if decoding fails.
-     */
     private fun urlDecode(value: String): String =
         try {
             val result = StringBuilder()
@@ -160,17 +174,6 @@ object DeepLinkParser {
         }
     }
 
-    /**
-     * Strictly validate owner and repo names to prevent injection attacks.
-     * Rejects:
-     * - Empty strings
-     * - Special characters that could be used for injection
-     * - Path traversal patterns
-     * - Control characters and whitespace
-     * - Excluded GitHub paths (like 'about', 'settings', etc.)
-     * - Names that exceed GitHub's length limits
-     * - Names that don't start with alphanumeric characters
-     */
     private fun isStrictlyValidOwnerRepo(
         owner: String,
         repo: String,
@@ -212,6 +215,30 @@ object DeepLinkParser {
         }
 
         return true
+    }
+
+    private fun parseAuthCallback(uri: String): DeepLinkDestination {
+        val state = extractQueryParam(uri, "state")?.let { urlDecode(it) } ?: return DeepLinkDestination.None
+        if (state.isEmpty() || state.length > 256 || !BASE64URL_RE.matches(state)) {
+            return DeepLinkDestination.None
+        }
+
+        val handoff = extractQueryParam(uri, "handoff")?.let { urlDecode(it) }
+        if (handoff != null) {
+            if (handoff.isEmpty() || handoff.length > 256 || !BASE64URL_RE.matches(handoff)) {
+                return DeepLinkDestination.None
+            }
+            return DeepLinkDestination.AuthHandoff(handoffId = handoff, state = state)
+        }
+
+        val error = extractQueryParam(uri, "error")?.let { urlDecode(it) }
+        if (error != null) {
+            val sanitized = error.take(64).filter { it.isLetterOrDigit() || it == '_' || it == '-' }
+            if (sanitized.isEmpty()) return DeepLinkDestination.None
+            return DeepLinkDestination.AuthError(reason = sanitized, state = state)
+        }
+
+        return DeepLinkDestination.None
     }
 
     private fun extractQueryParam(

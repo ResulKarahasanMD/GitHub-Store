@@ -3,6 +3,7 @@ package zed.rainxch.auth.presentation
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import java.net.URLEncoder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,34 +28,28 @@ import zed.rainxch.auth.domain.repository.RejectedKind
 import zed.rainxch.auth.presentation.mapper.toUi
 import zed.rainxch.auth.presentation.model.AuthLoginState
 import zed.rainxch.auth.presentation.model.GithubDeviceStartUi
-import zed.rainxch.core.domain.logging.GitHubStoreLogger
-import zed.rainxch.core.domain.utils.BrowserHelper
-import zed.rainxch.core.domain.utils.ClipboardHelper
+import zed.rainxch.core.domain.logging.KomiStoreLogger
+import zed.rainxch.core.domain.helpers.BrowserHelper
+import zed.rainxch.core.domain.helpers.ClipboardHelper
 import zed.rainxch.githubstore.core.presentation.res.*
+import kotlin.time.Duration.Companion.milliseconds
 
 class AuthenticationViewModel(
     private val authenticationRepository: AuthenticationRepository,
     private val browserHelper: BrowserHelper,
     private val clipboardHelper: ClipboardHelper,
     private val scope: CoroutineScope,
-    private val logger: GitHubStoreLogger,
+    private val logger: KomiStoreLogger,
     private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
     private var hasLoadedInitialData = false
     private var countdownJob: Job? = null
     private var pollingJob: Job? = null
     private var patSubmissionJob: Job? = null
+    private var webAuthWatchdogJob: Job? = null
     private var pollingIntervalMs: Long = DEFAULT_POLL_INTERVAL_SEC * 1000L
     private var authPath: AuthPath = AuthPath.Backend
 
-    /**
-     * Wall-clock timestamp (`System.currentTimeMillis()`) when the most
-     * recent poll *started*. Used to dedupe user-triggered polls against
-     * the background polling loop so that rapid interactions (tapping
-     * "Check status" multiple times, reopening the app repeatedly) don't
-     * stack polls on top of each other and trigger GitHub `slow_down`
-     * responses — the root cause of the "Rate limited" cascade.
-     */
     private var lastPollStartedAtMs: Long = 0L
 
     private val _state: MutableStateFlow<AuthenticationState> =
@@ -63,34 +58,34 @@ class AuthenticationViewModel(
     private val _events = Channel<AuthenticationEvents>(capacity = Channel.BUFFERED)
     val events = _events.receiveAsFlow()
 
-    val state =
-        _state
-            .onStart {
-                if (!hasLoadedInitialData) {
-                    scope.launch {
-                        authenticationRepository.accessTokenFlow.collect { token ->
-                            _state.update {
-                                it.copy(
-                                    loginState =
-                                        if (token.isNullOrEmpty()) {
-                                            AuthLoginState.LoggedOut
-                                        } else {
-                                            _events.trySend(AuthenticationEvents.OnNavigateToMain)
-                                            AuthLoginState.LoggedIn
-                                        },
-                                )
-                            }
+    val state = _state
+        .onStart {
+            if (!hasLoadedInitialData) {
+                scope.launch {
+                    authenticationRepository.accessTokenFlow.collect { token ->
+                        _state.update {
+                            it.copy(
+                                loginState =
+                                    if (token.isNullOrEmpty()) {
+                                        AuthLoginState.LoggedOut
+                                    } else {
+                                        _events.trySend(AuthenticationEvents.OnNavigateToMain)
+                                        AuthLoginState.LoggedIn
+                                    },
+                            )
                         }
                     }
-
-                    restoreFromSavedState()
-                    hasLoadedInitialData = true
                 }
-            }.stateIn(
-                scope = viewModelScope,
-                started = SharingStarted.WhileSubscribed(5_000L),
-                initialValue = AuthenticationState(),
-            )
+
+                restoreFromSavedState()
+                observeAuthDeepLinks()
+                hasLoadedInitialData = true
+            }
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = AuthenticationState(),
+        )
 
     fun onAction(action: AuthenticationAction) {
         when (action) {
@@ -145,9 +140,7 @@ class AuthenticationViewModel(
             }
 
             AuthenticationAction.DismissPatSheet -> {
-                // Cancel any in-flight submission so it can't race past
-                // the dismissal and navigate/toast after the user has
-                // bailed on the sheet.
+
                 patSubmissionJob?.cancel()
                 patSubmissionJob = null
                 _state.update {
@@ -162,8 +155,7 @@ class AuthenticationViewModel(
 
             is AuthenticationAction.OnPatInputChanged -> {
                 _state.update {
-                    // Clear error on edit so it doesn't linger after the
-                    // user starts fixing the problem.
+
                     it.copy(patInput = action.input, patError = null)
                 }
             }
@@ -174,6 +166,26 @@ class AuthenticationViewModel(
 
             AuthenticationAction.OpenPatSettingsPage -> {
                 openPatSettingsPage()
+            }
+
+            AuthenticationAction.StartWebAuth -> {
+                startWebAuth()
+            }
+
+            is AuthenticationAction.ConsumeAuthHandoff -> {
+                consumeAuthHandoff(action.handoffId, action.state)
+            }
+
+            is AuthenticationAction.ConsumeAuthError -> {
+                consumeAuthError(action.reason, action.state)
+            }
+
+            AuthenticationAction.OpenAdvancedAuth -> {
+                _state.update { it.copy(isAdvancedAuthVisible = true) }
+            }
+
+            AuthenticationAction.DismissAdvancedAuth -> {
+                _state.update { it.copy(isAdvancedAuthVisible = false) }
             }
         }
     }
@@ -214,11 +226,14 @@ class AuthenticationViewModel(
                         is PatRejectedException -> when (t.kind) {
                             is RejectedKind.BadCredentials ->
                                 getString(Res.string.pat_error_bad_credentials)
+
                             is RejectedKind.InsufficientScope ->
                                 getString(Res.string.pat_error_insufficient_scope)
+
                             is RejectedKind.Other ->
                                 getString(Res.string.pat_error_generic)
                         }
+
                         else -> getString(Res.string.pat_error_generic)
                     }
                     _state.update {
@@ -233,48 +248,256 @@ class AuthenticationViewModel(
         }
     }
 
+    private fun observeAuthDeepLinks() {
+        viewModelScope.launch {
+            AuthDeepLinkBus.events.collect { event ->
+                when (event) {
+                    is AuthDeepLinkEvent.Handoff -> {
+                        consumeAuthHandoff(event.handoffId, event.state)
+                        AuthDeepLinkBus.resetReplay()
+                    }
+
+                    is AuthDeepLinkEvent.Error -> {
+                        consumeAuthError(event.reason, event.state)
+                        AuthDeepLinkBus.resetReplay()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startWebAuth() {
+        if (_state.value.isWebAuthInFlight) return
+        webAuthWatchdogJob?.cancel()
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    isWebAuthInFlight = true,
+                    loginState = AuthLoginState.Pending,
+                )
+            }
+            val result = authenticationRepository.registerWebAuth()
+            result
+                .onSuccess { registration ->
+                    savedStateHandle[KEY_WEB_AUTH_STATE] = registration.state
+                    browserHelper.openUrl(registration.authUrl) { error ->
+                        logger.warn("Failed to open auth URL: $error")
+                        webAuthWatchdogJob?.cancel()
+                        savedStateHandle.remove<String>(KEY_WEB_AUTH_STATE)
+                        viewModelScope.launch {
+                            val (message, hint) =
+                                categorizeError(IllegalStateException(error))
+                            _state.update {
+                                it.copy(
+                                    isWebAuthInFlight = false,
+                                    loginState =
+                                        AuthLoginState.Error(
+                                            message = message,
+                                            recoveryHint = hint,
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                    _state.update { it.copy(isWebAuthInFlight = false) }
+                    startWebAuthWatchdog()
+                }
+                .onFailure { error ->
+                    val rootClass = error::class.simpleName ?: "Throwable"
+                    val rootMsg = error.message ?: "<no message>"
+                    logger.error(
+                        "registerWebAuth failed. class=$rootClass msg=$rootMsg",
+                        error,
+                    )
+                    val (message, hint) = categorizeError(error)
+                    _state.update {
+                        it.copy(
+                            isWebAuthInFlight = false,
+                            loginState =
+                                AuthLoginState.Error(
+                                    message = message,
+                                    recoveryHint = hint,
+                                ),
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun consumeAuthHandoff(handoffId: String, state: String) {
+        val expected = savedStateHandle.get<String>(KEY_WEB_AUTH_STATE)
+
+        if (expected == null) {
+            logger.debug("Ignoring web-auth handoff with no pending session")
+            return
+        }
+        if (expected != state) {
+            logger.warn(
+                "Web-auth handoff state mismatch. expected=${expected.take(8)} got=${state.take(8)}",
+            )
+            viewModelScope.launch {
+                _state.update {
+                    it.copy(
+                        loginState =
+                            AuthLoginState.Error(
+                                message = getString(Res.string.error_unknown),
+                                recoveryHint = getString(Res.string.auth_hint_try_again),
+                            ),
+                    )
+                }
+            }
+            return
+        }
+        webAuthWatchdogJob?.cancel()
+        savedStateHandle.remove<String>(KEY_WEB_AUTH_STATE)
+
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    isWebAuthInFlight = true,
+                    loginState = AuthLoginState.Pending,
+                )
+            }
+            val result = authenticationRepository.exchangeWebAuthHandoff(handoffId)
+            result
+                .onSuccess {
+                    _state.update {
+                        it.copy(
+                            isWebAuthInFlight = false,
+                            loginState = AuthLoginState.LoggedIn,
+                        )
+                    }
+                    _events.trySend(AuthenticationEvents.OnNavigateToMain)
+                }
+                .onFailure { error ->
+                    val rootClass = error::class.simpleName ?: "Throwable"
+                    val rootMsg = error.message ?: "<no message>"
+                    logger.error(
+                        "exchangeWebAuthHandoff failed. class=$rootClass msg=$rootMsg",
+                        error,
+                    )
+                    val (message, hint) = categorizeError(error)
+                    _state.update {
+                        it.copy(
+                            isWebAuthInFlight = false,
+                            loginState =
+                                AuthLoginState.Error(
+                                    message = message,
+                                    recoveryHint = hint,
+                                ),
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun consumeAuthError(reason: String, state: String) {
+        val expected = savedStateHandle.get<String>(KEY_WEB_AUTH_STATE)
+        if (expected == null) {
+            logger.debug("Ignoring web-auth error with no pending session")
+            return
+        }
+        if (expected != state) {
+            logger.warn(
+                "Web-auth error state mismatch (ignored). " +
+                        "expected=${expected.take(8)} got=${state.take(8)}",
+            )
+            return
+        }
+        webAuthWatchdogJob?.cancel()
+        savedStateHandle.remove<String>(KEY_WEB_AUTH_STATE)
+        logger.warn("Web-auth flow returned error: $reason")
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    isWebAuthInFlight = false,
+                    loginState = AuthLoginState.Error(
+                        message = getString(Res.string.error_unknown),
+                        recoveryHint = getString(Res.string.auth_hint_try_again),
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun startWebAuthWatchdog() {
+        webAuthWatchdogJob?.cancel()
+        webAuthWatchdogJob = viewModelScope.launch {
+            delay(WEB_AUTH_TIMEOUT_MS.milliseconds)
+            if (savedStateHandle.get<String>(KEY_WEB_AUTH_STATE) == null) return@launch
+            if (_state.value.loginState !is AuthLoginState.Pending) return@launch
+            savedStateHandle.remove<String>(KEY_WEB_AUTH_STATE)
+            logger.warn("Web-auth timed out waiting for callback")
+            _state.update {
+                it.copy(
+                    isWebAuthInFlight = false,
+                    loginState = AuthLoginState.Error(
+                        message = getString(Res.string.error_unknown),
+                        recoveryHint = getString(Res.string.auth_hint_try_again),
+                    ),
+                )
+            }
+        }
+    }
+
     private fun openPatSettingsPage() {
         viewModelScope.launch(Dispatchers.Main.immediate) {
             try {
                 browserHelper.openUrl(PAT_SETTINGS_URL)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.debug("Failed to open PAT settings page: ${e.message}")
             }
         }
     }
 
+    private fun devicePrompt(
+        start: GithubDeviceStartUi,
+        remainingSeconds: Int,
+    ): AuthLoginState.DevicePrompt {
+        val total = start.expiresInSec.coerceAtLeast(1)
+        val minutes = remainingSeconds / 60
+        val seconds = remainingSeconds % 60
+        return AuthLoginState.DevicePrompt(
+            start = start,
+            remainingSeconds = remainingSeconds,
+            progressFraction = (remainingSeconds.toFloat() / total).coerceIn(0f, 1f),
+            formattedTimer = "%02d:%02d".format(minutes, seconds),
+            isUrgent = remainingSeconds in 1 until 60,
+        )
+    }
+
     private fun startCountdown(remainingSeconds: Int) {
         countdownJob?.cancel()
-        countdownJob =
-            viewModelScope.launch {
-                var remaining = remainingSeconds
-                while (remaining > 0) {
-                    _state.update { currentState ->
-                        val loginState = currentState.loginState
-                        if (loginState is AuthLoginState.DevicePrompt) {
-                            currentState.copy(
-                                loginState = loginState.copy(remainingSeconds = remaining),
-                            )
-                        } else {
-                            return@launch
-                        }
+        countdownJob = viewModelScope.launch {
+            var remaining = remainingSeconds
+            while (remaining > 0) {
+                _state.update { currentState ->
+                    val loginState = currentState.loginState
+                    if (loginState is AuthLoginState.DevicePrompt) {
+                        currentState.copy(
+                            loginState = devicePrompt(loginState.start, remaining),
+                        )
+                    } else {
+                        return@launch
                     }
-                    delay(1000L)
-                    remaining--
                 }
-
-                pollingJob?.cancel()
-                clearSavedState()
-                _state.update {
-                    it.copy(
-                        loginState =
-                            AuthLoginState.Error(
-                                message = getString(Res.string.auth_error_code_expired),
-                                recoveryHint = getString(Res.string.auth_hint_try_again),
-                            ),
-                    )
-                }
+                delay(1000L.milliseconds)
+                remaining--
             }
+
+            pollingJob?.cancel()
+            clearSavedState()
+            _state.update {
+                it.copy(
+                    loginState = AuthLoginState.Error(
+                        message = getString(Res.string.auth_error_code_expired),
+                        recoveryHint = getString(Res.string.auth_hint_try_again),
+                    ),
+                )
+            }
+        }
     }
 
     private fun tryPollIfReady() {
@@ -282,16 +505,8 @@ class AuthenticationViewModel(
         if (loginState !is AuthLoginState.DevicePrompt) return
         if (_state.value.isPolling) return
 
-        // If the background loop is alive it's already polling on a fixed
-        // schedule — ANY on-resume poll we fire here lands on top of it and
-        // triggers `slow_down`. (Previous implementation tried to time-window
-        // this; the window was too narrow and still raced.) With a healthy
-        // loop we trust it completely and do nothing on resume.
         if (pollingJob?.isActive == true) return
 
-        // Loop died between sessions (process death without restoreFromSavedState
-        // rehydrating, or a crash in the loop itself). Restart + immediate poll
-        // to get things moving again.
         logger.debug("Resume poll: background loop was dead, restarting")
         startPolling(loginState.start.deviceCode)
         pollOnce(loginState.start.deviceCode)
@@ -302,9 +517,6 @@ class AuthenticationViewModel(
         if (loginState !is AuthLoginState.DevicePrompt) return
         val deviceCode = loginState.start.deviceCode
 
-        // Hard-block manual polls that land within MIN_MANUAL_POLL_SPACING_MS
-        // of the last poll. Prevents user tap-spam from burning the
-        // `slow_down` budget.
         val sinceLast = System.currentTimeMillis() - lastPollStartedAtMs
         if (sinceLast < MIN_MANUAL_POLL_SPACING_MS) {
             logger.debug("Manual poll suppressed — only ${sinceLast}ms since last poll")
@@ -312,9 +524,7 @@ class AuthenticationViewModel(
         }
 
         logger.debug("Manual poll requested (pollingJobActive=${pollingJob?.isActive})")
-        // Restart the background loop so its next scheduled poll is a full
-        // interval AFTER this manual one, not stacked right on top. Preserve
-        // the adaptive interval — don't reset it on manual tap.
+
         startPolling(deviceCode, resetInterval = false)
         pollOnce(deviceCode)
     }
@@ -322,10 +532,9 @@ class AuthenticationViewModel(
     private fun startLogin() {
         viewModelScope.launch {
             try {
-                val flowStart =
-                    withContext(Dispatchers.IO) {
-                        authenticationRepository.startDeviceFlow()
-                    }
+                val flowStart = withContext(Dispatchers.IO) {
+                    authenticationRepository.startDeviceFlow()
+                }
 
                 val start = flowStart.start
                 authPath = flowStart.path
@@ -336,11 +545,7 @@ class AuthenticationViewModel(
                 withContext(Dispatchers.Main.immediate) {
                     _state.update {
                         it.copy(
-                            loginState =
-                                AuthLoginState.DevicePrompt(
-                                    start = startUi,
-                                    remainingSeconds = start.expiresInSec,
-                                ),
+                            loginState = devicePrompt(startUi, start.expiresInSec),
                             copied = false,
                         )
                     }
@@ -352,9 +557,11 @@ class AuthenticationViewModel(
                     try {
                         clipboardHelper.copy(
                             label = getString(Res.string.enter_code_on_github),
-                            text = start.userCode,
+                            text = start.userCode.filter { it.isLetterOrDigit() },
                         )
                         _state.update { it.copy(copied = true) }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         logger.debug("Failed to copy to clipboard: ${e.message}")
                     }
@@ -365,6 +572,13 @@ class AuthenticationViewModel(
                 countdownJob?.cancel()
                 pollingJob?.cancel()
                 clearSavedState()
+                val rootCause = generateSequence<Throwable>(t) { it.cause }.lastOrNull() ?: t
+                val rootClass = rootCause::class.simpleName ?: "Throwable"
+                val rootMsg = rootCause.message ?: "<no message>"
+                logger.error(
+                    "startDeviceFlow failed. topClass=${t::class.simpleName} topMsg=${t.message} | rootClass=$rootClass rootMsg=$rootMsg",
+                    t,
+                )
                 val (message, hint) = categorizeError(t)
                 withContext(Dispatchers.Main.immediate) {
                     _state.update {
@@ -388,23 +602,19 @@ class AuthenticationViewModel(
             val intervalSec =
                 (loginState as? AuthLoginState.DevicePrompt)?.start?.intervalSec
                     ?: DEFAULT_POLL_INTERVAL_SEC
-            // Add 1s buffer above GitHub's minimum to avoid immediate slow_down
+
             pollingIntervalMs = (intervalSec * 1000).toLong() + 1000L
         }
-        pollingJob =
-            viewModelScope.launch {
-                while (isActive) {
-                    delay(pollingIntervalMs)
-                    doPoll(deviceCode)
-                }
+        pollingJob = viewModelScope.launch {
+            while (isActive) {
+                delay(pollingIntervalMs.milliseconds)
+                doPoll(deviceCode)
             }
+        }
     }
 
     private fun pollOnce(deviceCode: String) {
-        // Set the timestamp SYNCHRONOUSLY here (not inside doPoll's suspend
-        // body) so any concurrent tryPollIfReady / forcePollNow / restore
-        // invocation sees the current poll reservation immediately and
-        // doesn't stack another poll on top.
+
         lastPollStartedAtMs = System.currentTimeMillis()
         viewModelScope.launch {
             doPoll(deviceCode)
@@ -422,9 +632,18 @@ class AuthenticationViewModel(
                 }
 
             if (outcome.path != authPath) {
-                logger.debug("Auth path escalated from $authPath to ${outcome.path}")
-                authPath = outcome.path
-                savedStateHandle[KEY_AUTH_PATH] = authPath.name
+
+                val isLegalEscalation =
+                    authPath == AuthPath.Backend && outcome.path == AuthPath.Direct
+                if (isLegalEscalation) {
+                    logger.debug("Auth path escalated from $authPath to ${outcome.path}")
+                    authPath = outcome.path
+                    savedStateHandle[KEY_AUTH_PATH] = authPath.name
+                } else {
+                    logger.warn(
+                        "Refusing invalid auth path transition $authPath → ${outcome.path}",
+                    )
+                }
             }
 
             when (val result = outcome.result) {
@@ -445,12 +664,10 @@ class AuthenticationViewModel(
                 }
 
                 is DevicePollResult.SlowDown -> {
-                    // Cap the interval so one rough patch of rapid polls
-                    // (e.g. several ON_RESUME stacks early in the session)
-                    // can't strand the user waiting 30+ seconds to pick
-                    // up a completed authorization.
+
                     val bumped = (pollingIntervalMs + 5000L).coerceAtMost(MAX_POLL_INTERVAL_MS)
-                    val clamped = bumped == MAX_POLL_INTERVAL_MS && pollingIntervalMs >= MAX_POLL_INTERVAL_MS
+                    val clamped =
+                        bumped == MAX_POLL_INTERVAL_MS && pollingIntervalMs >= MAX_POLL_INTERVAL_MS
                     pollingIntervalMs = bumped
                     logger.debug(
                         if (clamped) {
@@ -465,8 +682,7 @@ class AuthenticationViewModel(
                             pollIntervalSec = (pollingIntervalMs / 1000).toInt(),
                         )
                     }
-                    // Don't restart — the existing polling loop reads pollingIntervalMs
-                    // on each iteration via delay(), so it will pick up the new value.
+
                 }
 
                 is DevicePollResult.Failed -> {
@@ -491,8 +707,6 @@ class AuthenticationViewModel(
             logger.debug("Unexpected poll error: ${t.message}")
         }
     }
-
-    // region SavedStateHandle
 
     private fun saveToSavedState(
         deviceCode: String,
@@ -550,15 +764,13 @@ class AuthenticationViewModel(
             )
 
         _state.update {
-            it.copy(loginState = AuthLoginState.DevicePrompt(startUi, remainingSec))
+            it.copy(loginState = devicePrompt(startUi, remainingSec))
         }
 
         startCountdown(remainingSec)
         startPolling(deviceCode)
         pollOnce(deviceCode)
     }
-
-    // endregion
 
     private suspend fun categorizeError(t: Throwable): Pair<String, String?> {
         val msg = t.message ?: return getString(Res.string.error_unknown) to null
@@ -595,12 +807,20 @@ class AuthenticationViewModel(
     private fun openGitHub(start: GithubDeviceStartUi) {
         viewModelScope.launch(Dispatchers.Main.immediate) {
             try {
-                val url = start.verificationUriComplete ?: start.verificationUri
+                val url = start.verificationUriComplete
+                    ?: buildPrefilledUrl(start.verificationUri, start.userCode)
                 browserHelper.openUrl(url)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.debug("Failed to open browser: ${e.message}")
             }
         }
+    }
+
+    private fun buildPrefilledUrl(verificationUri: String, userCode: String): String {
+        val separator = if ('?' in verificationUri) "&" else "?"
+        return verificationUri + separator + "user_code=" + URLEncoder.encode(userCode, "UTF-8")
     }
 
     private fun copyCode(start: GithubDeviceStartUi) {
@@ -608,7 +828,7 @@ class AuthenticationViewModel(
             try {
                 clipboardHelper.copy(
                     label = "GitHub Code",
-                    text = start.userCode,
+                    text = start.userCode.filter { it.isLetterOrDigit() },
                 )
 
                 _state.update {
@@ -616,10 +836,12 @@ class AuthenticationViewModel(
                         (it.loginState as? AuthLoginState.DevicePrompt)?.remainingSeconds ?: 0
 
                     it.copy(
-                        loginState = AuthLoginState.DevicePrompt(start, currentRemaining),
+                        loginState = devicePrompt(start, currentRemaining),
                         copied = true,
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.debug("Failed to copy to clipboard: ${e.message}")
                 _state.update {
@@ -627,7 +849,7 @@ class AuthenticationViewModel(
                         (it.loginState as? AuthLoginState.DevicePrompt)?.remainingSeconds ?: 0
 
                     it.copy(
-                        loginState = AuthLoginState.DevicePrompt(start, currentRemaining),
+                        loginState = devicePrompt(start, currentRemaining),
                         copied = false,
                     )
                 }
@@ -644,21 +866,21 @@ class AuthenticationViewModel(
         private const val KEY_EXPIRES_IN_SEC = "auth_expires_in_sec"
         private const val KEY_START_TIME_MILLIS = "auth_start_time_millis"
         private const val KEY_AUTH_PATH = "auth_path"
+        private const val KEY_WEB_AUTH_STATE = "auth_web_state"
+
+        // 11 min. Sits 60s past the server-side OAuth ceiling (600s for both
+        // the CF Worker's VERIFIER_TTL_SECONDS and the backend's STATE_TTL
+        // on `oauth_ephemeral`). The watchdog must outlive the longest
+        // legitimate slow sign-in the server will still accept; otherwise it
+        // false-cuts a flow the server would have completed. Only after
+        // both server ceilings have passed do we treat the absence of a
+        // deep-link callback as a genuine delivery failure (the Windows
+        // browser-handler case from GitHub-Store#730) and surface a retry.
+        private const val WEB_AUTH_TIMEOUT_MS = 660_000L
         private const val DEFAULT_POLL_INTERVAL_SEC = 5
 
-        /**
-         * Minimum wall-clock gap between a user-initiated manual poll
-         * (tap "Check status") and the previous poll. Anything closer
-         * gets silently dropped to keep us out of `slow_down` territory.
-         */
         private const val MIN_MANUAL_POLL_SPACING_MS = 2_000L
 
-        /**
-         * Ceiling on the adaptive `pollingIntervalMs`. Without this cap,
-         * a run of `slow_down` responses could push the interval up by
-         * 5s each time, leaving the user waiting 30+ seconds for the
-         * app to notice their completed authorization.
-         */
         private const val MAX_POLL_INTERVAL_MS = 15_000L
 
         private const val PAT_SETTINGS_URL = "https://github.com/settings/tokens/new"
@@ -673,6 +895,7 @@ class AuthenticationViewModel(
                 KEY_EXPIRES_IN_SEC,
                 KEY_START_TIME_MILLIS,
                 KEY_AUTH_PATH,
+                KEY_WEB_AUTH_STATE,
             )
     }
 }

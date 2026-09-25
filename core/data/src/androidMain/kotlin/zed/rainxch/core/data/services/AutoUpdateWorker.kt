@@ -18,23 +18,20 @@ import co.touchlab.kermit.Logger
 import kotlinx.coroutines.flow.first
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
+import zed.rainxch.core.data.services.dhizuku.DhizukuServiceManager
+import zed.rainxch.core.data.services.dhizuku.model.DhizukuStatus
+import zed.rainxch.core.data.services.root.RootServiceManager
+import zed.rainxch.core.data.services.root.model.RootStatus
 import zed.rainxch.core.data.services.shizuku.ShizukuServiceManager
 import zed.rainxch.core.data.services.shizuku.model.ShizukuStatus
-import zed.rainxch.core.domain.model.InstalledApp
-import zed.rainxch.core.domain.model.InstallerType
+import zed.rainxch.core.domain.model.installation.InstalledApp
+import zed.rainxch.core.domain.model.installation.InstallerType
 import zed.rainxch.core.domain.network.Downloader
 import zed.rainxch.core.domain.repository.InstalledAppsRepository
 import zed.rainxch.core.domain.repository.TweaksRepository
 import zed.rainxch.core.domain.system.Installer
+import zed.rainxch.core.domain.system.SystemInstallSerializer
 
-/**
- * Background worker that automatically downloads and silently installs
- * available updates via Shizuku.
- *
- * Only runs when auto-update is enabled AND Shizuku installer is selected and READY.
- * Falls back gracefully: if Shizuku becomes unavailable mid-update, remaining apps
- * are skipped and a notification is shown for manual update.
- */
 class AutoUpdateWorker(
     context: Context,
     params: WorkerParameters,
@@ -45,6 +42,9 @@ class AutoUpdateWorker(
     private val downloader: Downloader by inject()
     private val tweaksRepository: TweaksRepository by inject()
     private val shizukuServiceManager: ShizukuServiceManager by inject()
+    private val dhizukuServiceManager: DhizukuServiceManager by inject()
+    private val rootServiceManager: RootServiceManager by inject()
+    private val systemInstallSerializer: SystemInstallSerializer by inject()
 
     override suspend fun doWork(): Result {
         return try {
@@ -53,12 +53,25 @@ class AutoUpdateWorker(
             val autoUpdateEnabled = tweaksRepository.getAutoUpdateEnabled().first()
             val installerType = tweaksRepository.getInstallerType().first()
 
-            shizukuServiceManager.refreshStatus()
-            val shizukuReady = shizukuServiceManager.status.value == ShizukuStatus.READY
+            val silentReady = when (installerType) {
+                InstallerType.SHIZUKU -> {
+                    shizukuServiceManager.refreshStatus()
+                    shizukuServiceManager.status.value == ShizukuStatus.READY
+                }
+                InstallerType.DHIZUKU -> {
+                    dhizukuServiceManager.refreshStatus()
+                    dhizukuServiceManager.status.value == DhizukuStatus.READY
+                }
+                InstallerType.ROOT -> {
+                    rootServiceManager.refreshStatus()
+                    rootServiceManager.status.value == RootStatus.READY
+                }
+                InstallerType.DEFAULT -> false
+            }
 
-            if (!autoUpdateEnabled || installerType != InstallerType.SHIZUKU || !shizukuReady) {
+            if (!autoUpdateEnabled || !silentReady) {
                 Logger.i {
-                    "AutoUpdateWorker: Conditions not met (autoUpdate=$autoUpdateEnabled, installer=$installerType, shizuku=$shizukuReady), skipping"
+                    "AutoUpdateWorker: Conditions not met (autoUpdate=$autoUpdateEnabled, installer=$installerType, silentReady=$silentReady), skipping"
                 }
                 return Result.success()
             }
@@ -144,7 +157,7 @@ class AutoUpdateWorker(
         }
 
         Logger.d { "AutoUpdateWorker: Downloading $assetName for ${app.appName}" }
-        downloader.download(assetUrl, assetName).collect { /* consume flow to completion */ }
+        downloader.download(assetUrl, assetName).collect {   }
 
         val filePath =
             downloader.getDownloadedFilePath(assetName)
@@ -153,7 +166,6 @@ class AutoUpdateWorker(
         val apkInfo =
             installer.getApkInfoExtractor().extractPackageInfo(filePath)
 
-        // Validate package name matches (only when extraction succeeded)
         if (apkInfo != null && apkInfo.packageName != app.packageName) {
             Logger.e {
                 "AutoUpdateWorker: Package name mismatch for ${app.appName}! " +
@@ -199,10 +211,13 @@ class AutoUpdateWorker(
             )
         }
 
-        Logger.d { "AutoUpdateWorker: Installing ${app.appName} via Shizuku" }
+        val installerLabel = tweaksRepository.getInstallerType().first().name
+        Logger.d { "AutoUpdateWorker: Installing ${app.appName} via $installerLabel" }
         try {
+            systemInstallSerializer.awaitFreeAndMarkPending(app.packageName)
             installer.install(filePath, ext)
         } catch (e: Exception) {
+            systemInstallSerializer.markCompleted(app.packageName)
             installedAppsRepository.updatePendingStatus(app.packageName, false)
             throw e
         }
@@ -219,7 +234,7 @@ class AutoUpdateWorker(
             NotificationCompat
                 .Builder(applicationContext, UPDATE_SERVICE_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentTitle("GitHub Store")
+                .setContentTitle("Komi Store")
                 .setContentText(message)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setOngoing(true)

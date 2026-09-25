@@ -16,8 +16,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import zed.rainxch.core.data.network.BackendApiClient
-import zed.rainxch.core.domain.logging.GitHubStoreLogger
-import zed.rainxch.core.domain.model.DiscoveryPlatform
+import zed.rainxch.core.data.network.OFFLINE_MIRROR_BASE
+import zed.rainxch.core.domain.logging.KomiStoreLogger
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
 import zed.rainxch.home.data.data_source.CachedRepositoriesDataSource
 import zed.rainxch.home.data.dto.CachedGithubRepoSummary
 import zed.rainxch.home.data.dto.CachedRepoResponse
@@ -33,7 +34,7 @@ import kotlin.time.Instant
 @OptIn(ExperimentalTime::class)
 class CachedRepositoriesDataSourceImpl(
     private val backendApiClient: BackendApiClient,
-    private val logger: GitHubStoreLogger,
+    private val logger: KomiStoreLogger,
 ) : CachedRepositoriesDataSource {
     private val json =
         Json {
@@ -83,7 +84,6 @@ class CachedRepositoriesDataSourceImpl(
             }
         }
 
-        // Try backend first
         val backendResult = fetchTopicFromBackend(topic, platform)
         if (backendResult != null) {
             cacheMutex.withLock {
@@ -93,7 +93,6 @@ class CachedRepositoriesDataSourceImpl(
             return backendResult
         }
 
-        // Fallback to raw GitHub JSON
         logger.debug("Backend failed for topic $topicCacheKey, falling back to GitHub raw JSON")
         return fetchTopicFromFallback(topic, platform, topicCacheKey)
     }
@@ -115,7 +114,6 @@ class CachedRepositoriesDataSourceImpl(
             }
         }
 
-        // Try backend first
         val backendResult = fetchCategoryFromBackend(category, platform)
         if (backendResult != null) {
             cacheMutex.withLock {
@@ -125,12 +123,9 @@ class CachedRepositoriesDataSourceImpl(
             return backendResult
         }
 
-        // Fallback to raw GitHub JSON
         logger.debug("Backend failed for $cacheKey, falling back to GitHub raw JSON")
         return fetchCategoryFromFallback(category, platform, cacheKey)
     }
-
-    // ── Backend fetchers ──────────────────────────────────────────────
 
     private suspend fun fetchCategoryFromBackend(
         category: HomeCategory,
@@ -170,22 +165,11 @@ class CachedRepositoriesDataSourceImpl(
             platforms.map { plat ->
                 async {
                     val r = backendApiClient.getCategory(categorySlug, plat)
-                    val discoveryPlatform = when (plat) {
-                        "android" -> DiscoveryPlatform.Android
-                        "windows" -> DiscoveryPlatform.Windows
-                        "macos" -> DiscoveryPlatform.Macos
-                        "linux" -> DiscoveryPlatform.Linux
-                        else -> return@async null
-                    }
-                    r.getOrNull()?.map {
-                        it.toCachedGithubRepoSummary()
-                            .copy(availablePlatforms = listOf(discoveryPlatform))
-                    }
+                    r.getOrNull()?.map { it.toCachedGithubRepoSummary() }
                 }
             }.awaitAll().filterNotNull()
         }
 
-        // Only use backend result if all 4 platforms succeeded (mirrors fallback behavior)
         if (responses.isEmpty() || responses.size < platforms.size) return@withContext null
 
         val merged = responses
@@ -252,22 +236,13 @@ class CachedRepositoriesDataSourceImpl(
         val responses = coroutineScope {
             platforms.map { plat ->
                 async {
-                    val discoveryPlatform = when (plat) {
-                        "android" -> DiscoveryPlatform.Android
-                        "windows" -> DiscoveryPlatform.Windows
-                        "macos" -> DiscoveryPlatform.Macos
-                        "linux" -> DiscoveryPlatform.Linux
-                        else -> return@async null
-                    }
                     backendApiClient.getTopic(topicSlug, plat).getOrNull()?.map {
                         it.toCachedGithubRepoSummary()
-                            .copy(availablePlatforms = listOf(discoveryPlatform))
                     }
                 }
             }.awaitAll().filterNotNull()
         }
 
-        // Only use backend result if all 4 platforms succeeded (mirrors fallback behavior)
         if (responses.isEmpty() || responses.size < platforms.size) return@withContext null
 
         val merged = responses
@@ -295,8 +270,6 @@ class CachedRepositoriesDataSourceImpl(
             repositories = merged,
         )
     }
-
-    // ── Fallback fetchers (existing raw GitHub JSON) ──────────────────
 
     private suspend fun fetchCategoryFromFallback(
         category: HomeCategory,
@@ -447,7 +420,7 @@ class CachedRepositoriesDataSourceImpl(
     }
 
     private suspend fun fetchFallbackFile(path: String): CachedRepoResponse? {
-        val url = "https://raw.githubusercontent.com/OpenHub-Store/api/main/$path"
+        val url = "$OFFLINE_MIRROR_BASE/$path"
         val filePlatform = when {
             path.contains("/android") -> DiscoveryPlatform.Android
             path.contains("/windows") -> DiscoveryPlatform.Windows
@@ -462,8 +435,12 @@ class CachedRepositoriesDataSourceImpl(
                 json.decodeFromString<CachedRepoResponse>(response.bodyAsText())
                     .let { repoResponse ->
                         repoResponse.copy(
-                            repositories = repoResponse.repositories.map {
-                                it.copy(availablePlatforms = listOf(filePlatform))
+                            repositories = repoResponse.repositories.map { repo ->
+                                if (repo.availablePlatforms.isEmpty()) {
+                                    repo.copy(availablePlatforms = listOf(filePlatform))
+                                } else {
+                                    repo
+                                }
                             },
                         )
                     }
@@ -482,13 +459,12 @@ class CachedRepositoriesDataSourceImpl(
         }
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────
-
     private fun DiscoveryPlatform.toApiSlug(): String? = when (this) {
         DiscoveryPlatform.Android -> "android"
         DiscoveryPlatform.Windows -> "windows"
         DiscoveryPlatform.Macos -> "macos"
         DiscoveryPlatform.Linux -> "linux"
+        DiscoveryPlatform.Ios -> null 
         DiscoveryPlatform.All -> null
     }
 

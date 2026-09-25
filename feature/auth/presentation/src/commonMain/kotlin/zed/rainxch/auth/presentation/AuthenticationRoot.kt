@@ -3,6 +3,7 @@ package zed.rainxch.auth.presentation
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -15,64 +16,37 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DoneAll
-import androidx.compose.material.icons.filled.OpenWith
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.CircularWavyProgressIndicator
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.SheetValue
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -80,31 +54,41 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.graphics.vector.ImageVector
 import org.jetbrains.compose.resources.painterResource
+import org.jetbrains.compose.resources.vectorResource
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
 import zed.rainxch.auth.presentation.model.AuthLoginState
 import zed.rainxch.auth.presentation.model.GithubDeviceStartUi
-import zed.rainxch.core.presentation.components.GithubStoreButton
-import zed.rainxch.core.presentation.theme.GithubStoreTheme
+import zed.rainxch.core.presentation.components.buttons.KomiButton
+import zed.rainxch.core.presentation.components.buttons.KomiButtonSize
+import zed.rainxch.core.presentation.components.buttons.KomiButtonVariant
+import zed.rainxch.core.presentation.components.icon.KomiIcon
+import zed.rainxch.core.presentation.components.inputs.KomiTextField
+import zed.rainxch.core.presentation.components.progress.KomiCircularProgress
+import zed.rainxch.core.presentation.components.progress.KomiLinearProgress
+import zed.rainxch.core.presentation.components.scaffold.KomiScaffold
+import zed.rainxch.core.presentation.components.overlays.KomiSheet
+import zed.rainxch.core.presentation.components.overlays.KomiSheetPlacement
+import zed.rainxch.core.presentation.components.surfaces.KomiSurface
+import zed.rainxch.core.presentation.components.surfaces.KomiSurfacePaper
+import zed.rainxch.core.presentation.components.text.KomiText
+import zed.rainxch.core.presentation.components.text.KomiTextRole
+import zed.rainxch.core.presentation.locals.LocalPersonality
+import zed.rainxch.core.presentation.personality.classicPersonality
+import zed.rainxch.core.presentation.personality.utils.PersonalityPreview
 import zed.rainxch.core.presentation.utils.ObserveAsEvents
+import zed.rainxch.core.presentation.utils.constrainedContentWidth
 import zed.rainxch.githubstore.core.presentation.res.Res
-import zed.rainxch.githubstore.core.presentation.res.pat_cancel
-import zed.rainxch.githubstore.core.presentation.res.pat_hide
-import zed.rainxch.githubstore.core.presentation.res.pat_input_label
-import zed.rainxch.githubstore.core.presentation.res.pat_input_placeholder
-import zed.rainxch.githubstore.core.presentation.res.pat_open_settings
-import zed.rainxch.githubstore.core.presentation.res.pat_sheet_description
-import zed.rainxch.githubstore.core.presentation.res.pat_sheet_title
-import zed.rainxch.githubstore.core.presentation.res.pat_show
-import zed.rainxch.githubstore.core.presentation.res.pat_submit
-import zed.rainxch.githubstore.core.presentation.res.pat_use_token_instead
+import zed.rainxch.githubstore.core.presentation.res.auth_use_device_code_instead
 import zed.rainxch.githubstore.core.presentation.res.app_icon
 import zed.rainxch.githubstore.core.presentation.res.auth_check_status
-import zed.rainxch.githubstore.core.presentation.res.auth_code_expires_in
 import zed.rainxch.githubstore.core.presentation.res.auth_error_with_message
 import zed.rainxch.githubstore.core.presentation.res.auth_polling_status
 import zed.rainxch.githubstore.core.presentation.res.auth_rate_limited
+import zed.rainxch.githubstore.core.presentation.res.auth_hide_signin_options
+import zed.rainxch.githubstore.core.presentation.res.auth_more_signin_options
 import zed.rainxch.githubstore.core.presentation.res.continue_as_guest
 import zed.rainxch.githubstore.core.presentation.res.copy_code
 import zed.rainxch.githubstore.core.presentation.res.enter_code_on_github
@@ -112,6 +96,14 @@ import zed.rainxch.githubstore.core.presentation.res.ic_github
 import zed.rainxch.githubstore.core.presentation.res.more_requests
 import zed.rainxch.githubstore.core.presentation.res.more_requests_description
 import zed.rainxch.githubstore.core.presentation.res.open_github
+import zed.rainxch.githubstore.core.presentation.res.pat_cancel
+import zed.rainxch.githubstore.core.presentation.res.pat_input_label
+import zed.rainxch.githubstore.core.presentation.res.pat_input_placeholder
+import zed.rainxch.githubstore.core.presentation.res.pat_open_settings
+import zed.rainxch.githubstore.core.presentation.res.pat_sheet_description
+import zed.rainxch.githubstore.core.presentation.res.pat_sheet_title
+import zed.rainxch.githubstore.core.presentation.res.pat_submit
+import zed.rainxch.githubstore.core.presentation.res.pat_use_token_instead
 import zed.rainxch.githubstore.core.presentation.res.redirecting_message
 import zed.rainxch.githubstore.core.presentation.res.sign_in_with_github
 import zed.rainxch.githubstore.core.presentation.res.signed_in
@@ -132,9 +124,7 @@ fun AuthenticationRoot(
 
     ObserveAsEvents(viewModel.events) { event ->
         when (event) {
-            AuthenticationEvents.OnNavigateToMain -> {
-                onNavigateToHome()
-            }
+            AuthenticationEvents.OnNavigateToMain -> onNavigateToHome()
         }
     }
 
@@ -144,344 +134,352 @@ fun AuthenticationRoot(
     )
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun AuthenticationScreen(
     state: AuthenticationState,
     onAction: (AuthenticationAction) -> Unit,
 ) {
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-    ) { innerPadding ->
-        Column(
-            modifier =
-                Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .padding(horizontal = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(Modifier.height(48.dp))
+    val shape = LocalPersonality.current.shape
 
-            val iconScale by animateFloatAsState(
-                targetValue =
-                    when (state.loginState) {
-                        is AuthLoginState.LoggedIn -> 0.9f
-                        is AuthLoginState.Error -> 0.95f
+    KomiScaffold(
+        modifier = Modifier.fillMaxSize(),
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier.fillMaxSize().padding(innerPadding),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            Column(
+                modifier = Modifier
+                    .constrainedContentWidth()
+                    .fillMaxHeight()
+                    .padding(horizontal = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Spacer(Modifier.height(56.dp))
+
+                val iconScale by animateFloatAsState(
+                    targetValue = when (state.loginState) {
+                        is AuthLoginState.LoggedIn -> 0.92f
+                        is AuthLoginState.Error -> 0.96f
                         else -> 1f
                     },
-                animationSpec =
-                    spring(
+                    animationSpec = spring(
                         dampingRatio = Spring.DampingRatioMediumBouncy,
                         stiffness = Spring.StiffnessLow,
                     ),
-                label = "icon_scale",
-            )
+                    label = "icon_scale",
+                )
 
-            Image(
-                painter = painterResource(Res.drawable.app_icon),
-                contentDescription = null,
-                modifier =
-                    Modifier
-                        .size(120.dp)
+                Image(
+                    painter = painterResource(Res.drawable.app_icon),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(96.dp)
                         .graphicsLayer {
                             scaleX = iconScale
                             scaleY = iconScale
-                        }.clip(RoundedCornerShape(28.dp)),
-                contentScale = ContentScale.Crop,
-            )
+                        }
+                        .clip(RoundedCornerShape(shape.corner)),
+                    contentScale = ContentScale.Crop,
+                )
 
-            Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(24.dp))
 
-            AnimatedContent(
-                targetState = state.loginState,
-                transitionSpec = {
-                    val enter =
-                        fadeIn(tween(350)) +
-                            slideInVertically(
-                                animationSpec =
-                                    spring(
-                                        dampingRatio = Spring.DampingRatioLowBouncy,
-                                        stiffness = Spring.StiffnessMediumLow,
-                                    ),
-                                initialOffsetY = { it / 5 },
-                            )
-                    val exit = fadeOut(tween(200))
-                    enter togetherWith exit
-                },
-                contentKey = { it::class },
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                label = "auth_state",
-            ) { authState ->
-                when (authState) {
-                    is AuthLoginState.LoggedOut -> {
-                        StateLoggedOut(onAction = onAction)
-                    }
+                AnimatedContent(
+                    targetState = state.loginState,
+                    transitionSpec = {
+                        val enter = fadeIn(tween(350)) + slideInVertically(
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioLowBouncy,
+                                stiffness = Spring.StiffnessMediumLow,
+                            ),
+                            initialOffsetY = { it / 5 },
+                        )
+                        val exit = fadeOut(tween(200))
+                        enter togetherWith exit
+                    },
+                    contentKey = { it::class },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    label = "auth_state",
+                ) { authState ->
+                    when (authState) {
+                        is AuthLoginState.LoggedOut -> StateLoggedOut(
+                            isAdvancedAuthVisible = state.isAdvancedAuthVisible,
+                            onAction = onAction,
+                        )
 
-                    is AuthLoginState.DevicePrompt -> {
-                        StateDevicePrompt(
+                        is AuthLoginState.DevicePrompt -> StateDevicePrompt(
                             state = state,
                             authState = authState,
                             onAction = onAction,
                         )
-                    }
 
-                    is AuthLoginState.Pending -> {
-                        StatePending()
-                    }
+                        is AuthLoginState.Pending -> StatePending()
 
-                    is AuthLoginState.LoggedIn -> {
-                        StateLoggedIn()
-                    }
+                        is AuthLoginState.LoggedIn -> StateLoggedIn()
 
-                    is AuthLoginState.Error -> {
-                        StateError(
-                            authState = authState,
-                            onAction = onAction,
-                        )
+                        is AuthLoginState.Error -> StateError(authState = authState, onAction = onAction)
                     }
                 }
             }
-        }
 
-        if (state.isPatSheetVisible) {
-            PatSignInSheet(
-                input = state.patInput,
-                error = state.patError,
-                isSubmitting = state.isPatSubmitting,
-                onAction = onAction,
-            )
+            if (state.isPatSheetVisible) {
+                PatSignInSheet(
+                    input = state.patInput,
+                    error = state.patError,
+                    isSubmitting = state.isPatSubmitting,
+                    onAction = onAction,
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun StateLoggedOut(onAction: (AuthenticationAction) -> Unit) {
+private fun StateLoggedOut(
+    isAdvancedAuthVisible: Boolean,
+    onAction: (AuthenticationAction) -> Unit,
+) {
+    val colors = LocalPersonality.current.colors
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
+        KomiText(
             text = stringResource(Res.string.unlock_full_experience),
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onBackground,
+            role = KomiTextRole.Display,
+            fontWeight = FontWeight.SemiBold,
+            color = colors.onBackground,
             textAlign = TextAlign.Center,
+            uppercase = false,
         )
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(20.dp))
 
-        ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(32.dp),
-            colors =
-                CardDefaults.elevatedCardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-        ) {
-            Row(
-                modifier = Modifier.padding(20.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                Box(
-                    modifier =
-                        Modifier
-                            .size(48.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.OpenWith,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp),
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                }
-
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        text = stringResource(Res.string.more_requests),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-
-                    Text(
-                        text = stringResource(Res.string.more_requests_description),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
+        BenefitsCard()
 
         Spacer(Modifier.weight(1f))
 
-        GithubStoreButton(
+        PrimaryPillButton(
             text = stringResource(Res.string.sign_in_with_github),
-            onClick = { onAction(AuthenticationAction.StartLogin) },
-            icon = {
-                Icon(
-                    painter = painterResource(Res.drawable.ic_github),
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                )
-            },
-            modifier = Modifier.fillMaxWidth(),
+            leadingIcon = vectorResource(Res.drawable.ic_github),
+            onClick = { onAction(AuthenticationAction.StartWebAuth) },
         )
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
 
-        TextButton(onClick = { onAction(AuthenticationAction.OpenPatSheet) }) {
-            Text(
-                text = stringResource(Res.string.pat_use_token_instead),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
+        KomiButton(
+            onClick = { onAction(AuthenticationAction.SkipLogin) },
+            label = stringResource(Res.string.continue_as_guest),
+            variant = KomiButtonVariant.Text,
+            size = KomiButtonSize.Sm,
+        )
 
-        TextButton(onClick = { onAction(AuthenticationAction.SkipLogin) }) {
-            Text(
-                text = stringResource(Res.string.continue_as_guest),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.outline,
-            )
+        KomiButton(
+            onClick = {
+                onAction(
+                    if (isAdvancedAuthVisible) {
+                        AuthenticationAction.DismissAdvancedAuth
+                    } else {
+                        AuthenticationAction.OpenAdvancedAuth
+                    },
+                )
+            },
+            label = if (isAdvancedAuthVisible) {
+                stringResource(Res.string.auth_hide_signin_options)
+            } else {
+                stringResource(Res.string.auth_more_signin_options)
+            },
+            variant = KomiButtonVariant.Text,
+            size = KomiButtonSize.Sm,
+            trailingIcon = Icons.Default.ExpandMore,
+        )
+
+        AnimatedVisibility(visible = isAdvancedAuthVisible) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(Modifier.height(4.dp))
+
+                KomiButton(
+                    onClick = { onAction(AuthenticationAction.OpenPatSheet) },
+                    label = stringResource(Res.string.pat_use_token_instead),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
+
+                KomiButton(
+                    onClick = { onAction(AuthenticationAction.StartLogin) },
+                    label = stringResource(Res.string.auth_use_device_code_instead),
+                    variant = KomiButtonVariant.Text,
+                    size = KomiButtonSize.Sm,
+                )
+            }
         }
 
         Spacer(Modifier.height(16.dp))
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun BenefitsCard() {
+    val colors = LocalPersonality.current.colors
+    val shape = LocalPersonality.current.shape
+
+    KomiSurface(
+        modifier = Modifier.fillMaxWidth(),
+        paper = KomiSurfacePaper.Surface,
+    ) {
+        Row(
+            modifier = Modifier.padding(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(shape.corner))
+                    .background(colors.primary.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                KomiIcon(
+                    painter = painterResource(Res.drawable.ic_github),
+                    contentDescription = null,
+                    modifier = Modifier.size(22.dp),
+                    tint = colors.primary,
+                )
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                KomiText(
+                    text = stringResource(Res.string.more_requests),
+                    role = KomiTextRole.Title,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onSurface,
+                    uppercase = false,
+                )
+
+                KomiText(
+                    text = stringResource(Res.string.more_requests_description),
+                    role = KomiTextRole.Body,
+                    fontSize = 13.sp,
+                    color = colors.onSurfaceVariant,
+                    uppercase = false,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun StateDevicePrompt(
     state: AuthenticationState,
     authState: AuthLoginState.DevicePrompt,
     onAction: (AuthenticationAction) -> Unit,
 ) {
+    val colors = LocalPersonality.current.colors
+    val shape = LocalPersonality.current.shape
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.weight(1f))
 
-        ElevatedCard(
+        KomiSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(32.dp),
-            colors =
-                CardDefaults.elevatedCardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
+            paper = KomiSurfacePaper.Surface,
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier.padding(22.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text(
+                KomiText(
                     text = stringResource(Res.string.enter_code_on_github),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    role = KomiTextRole.Label,
+                    color = colors.onSurfaceVariant,
+                    uppercase = false,
                 )
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(14.dp))
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(
+                    KomiText(
                         text = authState.start.userCode,
-                        style = MaterialTheme.typography.headlineLarge,
+                        role = KomiTextRole.Mono,
+                        fontSize = 28.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        letterSpacing = 2.sp,
+                        color = colors.onSurface,
+                        uppercase = false,
                     )
 
                     Spacer(Modifier.width(12.dp))
 
-                    IconButton(
-                        shapes = IconButtonDefaults.shapes(),
-                        onClick = {
-                            onAction(AuthenticationAction.CopyCode(authState.start))
-                        },
-                        colors =
-                            IconButtonDefaults.iconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            ),
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(shape.corner))
+                            .background(colors.primary.copy(alpha = 0.14f))
+                            .clickable {
+                                onAction(AuthenticationAction.CopyCode(authState.start))
+                            },
+                        contentAlignment = Alignment.Center,
                     ) {
                         AnimatedContent(
                             targetState = state.copied,
                             transitionSpec = {
-                                (scaleIn(
-                                    spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-                                ) + fadeIn()) togetherWith (scaleOut() + fadeOut())
+                                (scaleIn(spring(dampingRatio = Spring.DampingRatioMediumBouncy)) + fadeIn()) togetherWith
+                                    (scaleOut() + fadeOut())
                             },
                             label = "copy_icon",
                         ) { isCopied ->
-                            Icon(
-                                imageVector =
-                                    if (isCopied) {
-                                        Icons.Default.DoneAll
-                                    } else {
-                                        Icons.Default.ContentCopy
-                                    },
+                            KomiIcon(
+                                imageVector = if (isCopied) Icons.Default.DoneAll else Icons.Default.ContentCopy,
                                 contentDescription = stringResource(Res.string.copy_code),
+                                modifier = Modifier.size(18.dp),
+                                tint = colors.primary,
                             )
                         }
                     }
                 }
 
                 state.info?.let { info ->
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(10.dp))
 
-                    Text(
+                    KomiText(
                         text = info,
-                        style = MaterialTheme.typography.bodyMedium,
+                        role = KomiTextRole.Body,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = colors.primary,
                         textAlign = TextAlign.Center,
+                        uppercase = false,
                     )
                 }
 
                 if (authState.remainingSeconds > 0) {
-                    Spacer(Modifier.height(20.dp))
-
-                    val progress =
-                        authState.remainingSeconds.toFloat() /
-                            authState.start.expiresInSec.toFloat()
+                    Spacer(Modifier.height(16.dp))
 
                     val animatedProgress by animateFloatAsState(
-                        targetValue = progress,
+                        targetValue = authState.progressFraction,
                         animationSpec = tween(900),
                         label = "countdown_progress",
                     )
-
-                    val isUrgent = authState.remainingSeconds < 60
-
                     val progressColor by animateColorAsState(
-                        targetValue =
-                            if (isUrgent) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            },
+                        targetValue = if (authState.isUrgent) colors.error else colors.primary,
                         animationSpec = tween(500),
                         label = "progress_color",
                     )
-
                     val timerColor by animateColorAsState(
-                        targetValue =
-                            if (isUrgent) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.outline
-                            },
+                        targetValue = if (authState.isUrgent) colors.error else colors.onSurfaceVariant,
                         animationSpec = tween(500),
                         label = "timer_color",
                     )
@@ -490,94 +488,66 @@ private fun StateDevicePrompt(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        LinearProgressIndicator(
+                        KomiLinearProgress(
                             progress = { animatedProgress },
-                            modifier =
-                                Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(4.dp)),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(shape.cornerSmall)),
                             color = progressColor,
-                            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                         )
 
                         Spacer(Modifier.width(12.dp))
 
-                        val minutes = authState.remainingSeconds / 60
-                        val seconds = authState.remainingSeconds % 60
-                        val formatted =
-                            remember(minutes, seconds) {
-                                "%02d:%02d".format(minutes, seconds)
-                            }
-
-                        Text(
-                            text = formatted,
-                            style = MaterialTheme.typography.labelMedium,
+                        KomiText(
+                            text = authState.formattedTimer,
+                            role = KomiTextRole.Mono,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Medium,
                             color = timerColor,
+                            uppercase = false,
                         )
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(18.dp))
 
-        GithubStoreButton(
+        PrimaryPillButton(
             text = stringResource(Res.string.open_github),
-            onClick = {
-                onAction(AuthenticationAction.OpenGitHub(authState.start))
-            },
-            icon = {
-                Icon(
-                    painter = painterResource(Res.drawable.ic_github),
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                )
-            },
-            modifier = Modifier.fillMaxWidth(),
+            leadingIcon = vectorResource(Res.drawable.ic_github),
+            onClick = { onAction(AuthenticationAction.OpenGitHub(authState.start)) },
         )
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
 
-        FilledTonalButton(
+        KomiButton(
             onClick = { onAction(AuthenticationAction.PollNow) },
-            enabled = !state.isPolling,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            if (state.isPolling) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
+            label = if (state.isPolling) {
+                stringResource(Res.string.auth_polling_status)
             } else {
-                Icon(
-                    imageVector = Icons.Default.Refresh,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-
-            Spacer(Modifier.width(8.dp))
-
-            Text(
-                text =
-                    if (state.isPolling) {
-                        stringResource(Res.string.auth_polling_status)
-                    } else {
-                        stringResource(Res.string.auth_check_status)
-                    },
-                style = MaterialTheme.typography.labelLarge,
-            )
-        }
+                stringResource(Res.string.auth_check_status)
+            },
+            variant = KomiButtonVariant.Outline,
+            size = KomiButtonSize.Md,
+            fullWidth = true,
+            enabled = !state.isPolling,
+            loading = state.isPolling,
+            leadingIcon = if (state.isPolling) null else Icons.Default.Refresh,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+        )
 
         if (state.pollIntervalSec > 0) {
             Spacer(Modifier.height(8.dp))
-            Text(
+
+            KomiText(
                 text = stringResource(Res.string.auth_rate_limited, state.pollIntervalSec),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                role = KomiTextRole.Label,
+                fontSize = 11.sp,
+                color = colors.onSurfaceVariant,
+                uppercase = false,
             )
         }
 
@@ -585,70 +555,78 @@ private fun StateDevicePrompt(
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun StatePending() {
+    val colors = LocalPersonality.current.colors
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        CircularWavyProgressIndicator(
-            modifier = Modifier.size(64.dp),
-        )
+        KomiCircularProgress(modifier = Modifier.size(56.dp))
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(20.dp))
 
-        Text(
+        KomiText(
             text = stringResource(Res.string.waiting_for_authorization),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            role = KomiTextRole.Title,
+            color = colors.onSurfaceVariant,
             textAlign = TextAlign.Center,
+            uppercase = false,
         )
     }
 }
 
 @Composable
 private fun StateLoggedIn() {
+    val colors = LocalPersonality.current.colors
+    val shape = LocalPersonality.current.shape
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        var visible by remember { mutableStateOf(false) }
-
-        LaunchedEffect(Unit) { visible = true }
+        val checkmarkVisibility = remember { MutableTransitionState(false).apply { targetState = true } }
 
         AnimatedVisibility(
-            visible = visible,
-            enter =
-                scaleIn(
-                    spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-                ) + fadeIn(),
+            visibleState = checkmarkVisibility,
+            enter = scaleIn(spring(dampingRatio = Spring.DampingRatioMediumBouncy)) + fadeIn(),
         ) {
-            Icon(
-                imageVector = Icons.Default.CheckCircle,
-                contentDescription = null,
-                modifier = Modifier.size(72.dp),
-                tint = MaterialTheme.colorScheme.primary,
-            )
+            Box(
+                modifier = Modifier
+                    .size(80.dp)
+                    .clip(RoundedCornerShape(shape.cornerSmall))
+                    .background(colors.primary.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                KomiIcon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp),
+                    tint = colors.primary,
+                )
+            }
         }
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(18.dp))
 
-        Text(
+        KomiText(
             text = stringResource(Res.string.signed_in),
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground,
+            role = KomiTextRole.Title,
+            fontWeight = FontWeight.SemiBold,
+            color = colors.onBackground,
+            uppercase = false,
         )
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
 
-        Text(
+        KomiText(
             text = stringResource(Res.string.redirecting_message),
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            role = KomiTextRole.Body,
+            color = colors.onSurfaceVariant,
+            uppercase = false,
         )
     }
 }
@@ -658,80 +636,99 @@ private fun StateError(
     authState: AuthLoginState.Error,
     onAction: (AuthenticationAction) -> Unit,
 ) {
+    val colors = LocalPersonality.current.colors
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.weight(1f))
 
-        ElevatedCard(
+        KomiSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(32.dp),
-            colors =
-                CardDefaults.elevatedCardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                ),
+            paper = KomiSurfacePaper.Surface,
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.error.copy(alpha = 0.12f))
+                    .padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Icon(
-                    imageVector = Icons.Default.Warning,
+                KomiIcon(
+                    imageVector = Icons.Outlined.WarningAmber,
                     contentDescription = null,
-                    modifier = Modifier.size(40.dp),
-                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(34.dp),
+                    tint = colors.error,
                 )
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(12.dp))
 
-                Text(
-                    text =
-                        stringResource(
-                            Res.string.auth_error_with_message,
-                            authState.message,
-                        ),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
+                KomiText(
+                    text = stringResource(Res.string.auth_error_with_message, authState.message),
+                    role = KomiTextRole.Title,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onSurface,
                     textAlign = TextAlign.Center,
+                    uppercase = false,
                 )
 
                 authState.recoveryHint?.let { hint ->
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(6.dp))
 
-                    Text(
+                    KomiText(
                         text = hint,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
+                        role = KomiTextRole.Body,
+                        fontSize = 13.sp,
+                        color = colors.onSurfaceVariant,
                         textAlign = TextAlign.Center,
+                        uppercase = false,
                     )
                 }
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(20.dp))
 
-        GithubStoreButton(
+        PrimaryPillButton(
             text = stringResource(Res.string.try_again),
             onClick = { onAction(AuthenticationAction.StartLogin) },
-            modifier = Modifier.fillMaxWidth(),
         )
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
 
-        TextButton(onClick = { onAction(AuthenticationAction.SkipLogin) }) {
-            Text(
-                text = stringResource(Res.string.continue_as_guest),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.outline,
-            )
-        }
+        KomiButton(
+            onClick = { onAction(AuthenticationAction.SkipLogin) },
+            label = stringResource(Res.string.continue_as_guest),
+            variant = KomiButtonVariant.Text,
+            size = KomiButtonSize.Sm,
+        )
 
         Spacer(Modifier.weight(2f))
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PrimaryPillButton(
+    text: String,
+    onClick: () -> Unit,
+    leadingIcon: ImageVector? = null,
+    enabled: Boolean = true,
+) {
+    KomiButton(
+        onClick = onClick,
+        label = text,
+        enabled = enabled,
+        variant = KomiButtonVariant.Primary,
+        size = KomiButtonSize.Lg,
+        fullWidth = true,
+        leadingIcon = leadingIcon,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp),
+    )
+}
+
 @Composable
 private fun PatSignInSheet(
     input: String,
@@ -739,124 +736,81 @@ private fun PatSignInSheet(
     isSubmitting: Boolean,
     onAction: (AuthenticationAction) -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState(
-        skipPartiallyExpanded = true,
-        // Veto the visual Hidden transition while a submission is in
-        // flight, so a swipe-down/scrim-tap can't cosmetically dismiss
-        // the sheet before `onDismissRequest`'s guard runs. Pairs with
-        // the existing `!isSubmitting` check in `onDismissRequest` to
-        // fully gate dismissal during save.
-        confirmValueChange = { newValue ->
-            !(isSubmitting && newValue == SheetValue.Hidden)
-        },
-    )
-    var isMasked by remember { mutableStateOf(true) }
+    val colors = LocalPersonality.current.colors
 
-    ModalBottomSheet(
-        onDismissRequest = { if (!isSubmitting) onAction(AuthenticationAction.DismissPatSheet) },
-        sheetState = sheetState,
+    KomiSheet(
+        onDismiss = { if (!isSubmitting) onAction(AuthenticationAction.DismissPatSheet) },
+        placement = KomiSheetPlacement.Bottom,
     ) {
         Column(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text(
+            KomiText(
                 text = stringResource(Res.string.pat_sheet_title),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
+                role = KomiTextRole.Title,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onSurface,
+                uppercase = false,
             )
 
-            Text(
+            KomiText(
                 text = stringResource(Res.string.pat_sheet_description),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                role = KomiTextRole.Body,
+                fontSize = 13.sp,
+                color = colors.onSurfaceVariant,
+                uppercase = false,
             )
 
-            FilledTonalButton(
+            KomiButton(
                 onClick = { onAction(AuthenticationAction.OpenPatSettingsPage) },
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    text = stringResource(Res.string.pat_open_settings),
-                    style = MaterialTheme.typography.labelLarge,
-                )
-            }
+                label = stringResource(Res.string.pat_open_settings),
+                variant = KomiButtonVariant.Outline,
+                size = KomiButtonSize.Md,
+                fullWidth = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+            )
 
-            OutlinedTextField(
+            KomiTextField(
                 value = input,
                 onValueChange = { onAction(AuthenticationAction.OnPatInputChanged(it)) },
-                label = { Text(stringResource(Res.string.pat_input_label)) },
-                placeholder = { Text(stringResource(Res.string.pat_input_placeholder)) },
-                singleLine = true,
-                visualTransformation =
-                    if (isMasked) PasswordVisualTransformation() else VisualTransformation.None,
-                keyboardOptions =
-                    KeyboardOptions(
-                        keyboardType = KeyboardType.Password,
-                        autoCorrectEnabled = false,
-                        capitalization = KeyboardCapitalization.None,
-                    ),
-                isError = error != null,
+                label = stringResource(Res.string.pat_input_label),
+                placeholder = stringResource(Res.string.pat_input_placeholder),
+                error = error,
+                password = true,
+                keyboardType = KeyboardType.Password,
                 enabled = !isSubmitting,
-                trailingIcon = {
-                    IconButton(onClick = { isMasked = !isMasked }) {
-                        Icon(
-                            imageVector =
-                                if (isMasked) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                            contentDescription =
-                                stringResource(
-                                    if (isMasked) Res.string.pat_show else Res.string.pat_hide,
-                                ),
-                        )
-                    }
-                },
                 modifier = Modifier.fillMaxWidth(),
             )
-
-            if (error != null) {
-                Text(
-                    text = error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            Spacer(Modifier.height(4.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                TextButton(
+                KomiButton(
                     onClick = { onAction(AuthenticationAction.DismissPatSheet) },
+                    label = stringResource(Res.string.pat_cancel),
                     enabled = !isSubmitting,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(stringResource(Res.string.pat_cancel))
-                }
+                    variant = KomiButtonVariant.Outline,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
+                )
 
-                GithubStoreButton(
-                    text = stringResource(Res.string.pat_submit),
+                KomiButton(
                     onClick = { onAction(AuthenticationAction.SubmitPat) },
-                    modifier = Modifier.weight(1f),
-                    icon =
-                        if (isSubmitting) {
-                            {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                )
-                            }
-                        } else {
-                            null
-                        },
+                    label = stringResource(Res.string.pat_submit),
+                    enabled = !isSubmitting && input.isNotBlank(),
+                    loading = isSubmitting,
+                    variant = KomiButtonVariant.Primary,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
                 )
             }
         }
@@ -866,16 +820,14 @@ private fun PatSignInSheet(
 @Preview
 @Composable
 private fun PreviewError() {
-    GithubStoreTheme {
+    PersonalityPreview {
         AuthenticationScreen(
-            state =
-                AuthenticationState(
-                    loginState =
-                        AuthLoginState.Error(
-                            message = "Network timeout",
-                            recoveryHint = "Check your internet connection",
-                        ),
+            state = AuthenticationState(
+                loginState = AuthLoginState.Error(
+                    message = "Network timeout",
+                    recoveryHint = "Check your internet connection",
                 ),
+            ),
             onAction = {},
         )
     }
@@ -884,12 +836,9 @@ private fun PreviewError() {
 @Preview
 @Composable
 private fun PreviewLoggedOut() {
-    GithubStoreTheme {
+    PersonalityPreview(personality = classicPersonality()) {
         AuthenticationScreen(
-            state =
-                AuthenticationState(
-                    loginState = AuthLoginState.LoggedOut,
-                ),
+            state = AuthenticationState(loginState = AuthLoginState.LoggedOut),
             onAction = {},
         )
     }
@@ -898,22 +847,22 @@ private fun PreviewLoggedOut() {
 @Preview
 @Composable
 private fun PreviewDevicePrompt() {
-    GithubStoreTheme {
+    PersonalityPreview {
         AuthenticationScreen(
-            state =
-                AuthenticationState(
-                    loginState =
-                        AuthLoginState.DevicePrompt(
-                            GithubDeviceStartUi(
-                                deviceCode = "",
-                                userCode = "2102-UHHUF",
-                                verificationUri = "",
-                                expiresInSec = 900,
-                            ),
-                            remainingSeconds = 847,
-                        ),
-                    copied = true,
+            state = AuthenticationState(
+                loginState = AuthLoginState.DevicePrompt(
+                    start = GithubDeviceStartUi(
+                        deviceCode = "",
+                        userCode = "2102-UHHUF",
+                        verificationUri = "",
+                        expiresInSec = 900,
+                    ),
+                    remainingSeconds = 847,
+                    progressFraction = 847f / 900f,
+                    formattedTimer = "14:07",
                 ),
+                copied = true,
+            ),
             onAction = {},
         )
     }
@@ -922,12 +871,9 @@ private fun PreviewDevicePrompt() {
 @Preview
 @Composable
 private fun PreviewLoggedIn() {
-    GithubStoreTheme {
+    PersonalityPreview {
         AuthenticationScreen(
-            state =
-                AuthenticationState(
-                    loginState = AuthLoginState.LoggedIn,
-                ),
+            state = AuthenticationState(loginState = AuthLoginState.LoggedIn),
             onAction = {},
         )
     }

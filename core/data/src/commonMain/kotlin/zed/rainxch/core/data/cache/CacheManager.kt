@@ -1,5 +1,11 @@
 package zed.rainxch.core.data.cache
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import zed.rainxch.core.data.local.db.dao.CacheDao
@@ -8,43 +14,73 @@ import kotlin.time.Clock
 import kotlin.time.Duration.Companion.hours
 
 class CacheManager(
-    val cacheDao: CacheDao,
+    @PublishedApi internal val cacheDao: CacheDao,
+    appScope: CoroutineScope? = null,
 ) {
-    val json =
+    @PublishedApi
+    internal val json =
         Json {
             ignoreUnknownKeys = true
             isLenient = true
             encodeDefaults = true
         }
 
-    val memoryCache = HashMap<String, Pair<Long, String>>()
+    @PublishedApi
+    internal val memoryCache = HashMap<String, Pair<Long, String>>()
+
+    @PublishedApi
+    internal val memoryCacheMutex = Mutex()
+
+    init {
+        appScope?.launch {
+            while (true) {
+                delay(CLEANUP_INTERVAL_MS)
+                runCatching { cleanupExpired() }
+            }
+        }
+    }
 
     fun now(): Long = Clock.System.now().toEpochMilliseconds()
 
     suspend inline fun <reified T> get(key: String): T? {
         val currentTime = now()
 
-        memoryCache[key]?.let { (expiresAt, jsonData) ->
+        val cached = memoryCacheMutex.withLock { memoryCache[key] }
+        if (cached != null) {
+            val (expiresAt, jsonData) = cached
             if (expiresAt > currentTime) {
                 return try {
                     json.decodeFromString(serializer<T>(), jsonData)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
-                    memoryCache.remove(key)
+                    memoryCacheMutex.withLock {
+                        if (memoryCache[key] == cached) memoryCache.remove(key)
+                    }
                     null
                 }
             } else {
-                memoryCache.remove(key)
+                memoryCacheMutex.withLock {
+                    if (memoryCache[key] == cached) memoryCache.remove(key)
+                }
             }
         }
 
         val entry = cacheDao.getValid(key, currentTime) ?: return null
-        memoryCache[key] = entry.expiresAt to entry.jsonData
+        val snapshot = entry.expiresAt to entry.jsonData
+        memoryCacheMutex.withLock {
+            memoryCache[key] = snapshot
+        }
 
         return try {
             json.decodeFromString(serializer<T>(), entry.jsonData)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
-            cacheDao.delete(key)
-            memoryCache.remove(key)
+            cacheDao.deleteIfMatches(key, entry.cachedAt)
+            memoryCacheMutex.withLock {
+                if (memoryCache[key] == snapshot) memoryCache.remove(key)
+            }
             null
         }
     }
@@ -53,6 +89,8 @@ class CacheManager(
         val entry = cacheDao.getAny(key) ?: return null
         return try {
             json.decodeFromString(serializer<T>(), entry.jsonData)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
@@ -67,7 +105,9 @@ class CacheManager(
         val jsonData = json.encodeToString(serializer<T>(), value)
         val expiresAt = currentTime + ttlMillis
 
-        memoryCache[key] = expiresAt to jsonData
+        memoryCacheMutex.withLock {
+            memoryCache[key] = expiresAt to jsonData
+        }
 
         cacheDao.put(
             CacheEntryEntity(
@@ -80,38 +120,36 @@ class CacheManager(
     }
 
     suspend fun invalidate(key: String) {
-        memoryCache.remove(key)
+        memoryCacheMutex.withLock { memoryCache.remove(key) }
         cacheDao.delete(key)
     }
 
-    suspend fun invalidateByPrefix(prefix: String) {
-        val keysToRemove = memoryCache.keys.filter { it.startsWith(prefix) }
-        keysToRemove.forEach { memoryCache.remove(it) }
-        cacheDao.deleteByPrefix(prefix)
-    }
-
     suspend fun clearAll() {
-        memoryCache.clear()
+        memoryCacheMutex.withLock { memoryCache.clear() }
         cacheDao.deleteAll()
     }
 
     suspend fun cleanupExpired() {
         val currentTime = now()
-        val expiredKeys =
-            memoryCache.entries
-                .filter { it.value.first <= currentTime }
-                .map { it.key }
-        expiredKeys.forEach { memoryCache.remove(it) }
+        memoryCacheMutex.withLock {
+            val expiredKeys =
+                memoryCache.entries
+                    .filter { it.value.first <= currentTime }
+                    .map { it.key }
+            expiredKeys.forEach { memoryCache.remove(it) }
+        }
         cacheDao.deleteExpired(currentTime)
     }
 
     companion object CacheTtl {
-        val HOME_REPOS = 12.hours.inWholeMilliseconds
+        val HOME_REPOS = 24.hours.inWholeMilliseconds
+        val FEED = 3.hours.inWholeMilliseconds
         val REPO_DETAILS = 6.hours.inWholeMilliseconds
         val RELEASES = 6.hours.inWholeMilliseconds
         val README = 12.hours.inWholeMilliseconds
         val USER_PROFILE = 6.hours.inWholeMilliseconds
         val SEARCH_RESULTS = 1.hours.inWholeMilliseconds
         val REPO_STATS = 6.hours.inWholeMilliseconds
+        const val CLEANUP_INTERVAL_MS: Long = 60L * 60L * 1000L
     }
 }

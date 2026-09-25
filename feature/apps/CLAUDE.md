@@ -1,45 +1,45 @@
-# CLAUDE.md - Apps Feature
+# Apps Feature
 
-## Purpose
+Installed-apps manager. Lists apps installed through GHS, launches them, checks updates. Android-only in nav (bottom-nav hidden on Desktop).
 
-Manages installed applications. Lists all apps installed through GitHub Store, allows launching them, and checks for available updates. Primarily relevant on **Android** (apps section is hidden on Desktop).
-
-## Module Structure
+## Structure
 
 ```
 feature/apps/
-├── domain/
-│   └── repository/AppsRepository.kt   # Installed apps, launch, update check
-├── data/
-│   ├── di/SharedModule.kt            # Koin: appsModule
-│   └── repository/AppsRepositoryImpl.kt  # Implementation using core InstalledAppsRepository
+├── domain/repository/AppsRepository.kt
+├── data/  AppsRepositoryImpl + di
 └── presentation/
-    ├── AppsViewModel.kt               # State management for installed apps list
-    ├── AppsState.kt                   # apps list, loading, error
-    ├── AppsAction.kt                  # Refresh, OpenApp, CheckUpdates, clicks
-    ├── AppsEvent.kt                   # One-off events
-    ├── AppsRoot.kt                    # Main composable (apps list)
-    └── components/                    # App item cards, update badges
+    ├── AppsViewModel / State / Action / Event / Root
+    ├── components/  app item cards, update badges, LinkAppBottomSheet, AdvancedAppSettingsBottomSheet, ApkInspectSheet, import banner
+    ├── import/      # ExternalImportRoot/ViewModel — Obtainium import/export + manual-link
+    └── starred/     # StarredPickerRoot/ViewModel — APK-shipping subset of user's GitHub stars
 ```
 
-## Key Interfaces
+## Key interface
 
 ```kotlin
 interface AppsRepository {
     suspend fun getApps(): Flow<List<InstalledApp>>
     suspend fun openApp(installedApp: InstalledApp, onCantLaunchApp: () -> Unit = {})
-    suspend fun getLatestRelease(owner: String, repo: String): GithubRelease?
+    suspend fun getLatestRelease(owner, repo, includePreReleases = false, sourceHost: String? = null): GithubRelease?
+    suspend fun fetchRepoInfo(owner, repo, sourceHost: String? = null): GithubRepoInfo?
+    suspend fun linkAppToRepo(..., sourceHost: String? = null)
+    /* exportApps / exportObtainium / importApps */
 }
 ```
 
 ## Navigation
 
-Route: `GithubStoreGraph.AppsScreen` (data object, no params)
+`GithubStoreGraph.AppsScreen`, `ExternalImportScreen`, `StarredPickerScreen`.
 
-## Implementation Notes
+## Notes
 
-- Uses `InstalledAppsRepository` and `SyncInstalledAppsUseCase` from core/domain
-- `openApp()` uses `AppLauncher` from core/domain to launch the installed app
-- `getLatestRelease()` checks if a newer version is available
-- Platform-specific: `PackageMonitor` and `Installer` handle Android package management
-- The apps section in the home screen bottom nav is only visible on `Platform.ANDROID`
+- Uses `InstalledAppsRepository` + `SyncInstalledAppsUseCase`. `openApp` via `AppLauncher`. `PackageMonitor` + `Installer` (Android). Data layer injects `ForgejoClientRegistry`; non-null `sourceHost` on `getLatestRelease` / `fetchRepoInfo` / `linkAppToRepo` routes to the Forgejo client (else default GitHub-direct path).
+- **`sourceHost` propagation:** `InstalledApp.sourceHost` persisted on link; `AppsAction.OpenAppDetails` / `OpenRepoDetails` + `AppsEvent.NavigateToRepo` carry `sourceHost`; `AppsRoot.onNavigateToRepo` is `(repoId, sourceHost, owner, repo) -> Unit` and routes to `GithubStoreGraph.DetailsScreen(sourceHost = …)`.
+- **Multi-source backend match:** `RepoSuggestion` candidates may come from GitHub *or* a Forgejo host; the link sheet displays the source host chip per row so the user picks the right forge variant.
+- Sort + search: `AppSortRule` enum (UpdatesFirst default, AlphabeticalAZ, RecentlyAdded, RecentlyUpdated). Persisted in DataStore. Inline search filters appName / packageName.
+- Per-app actions: Ignore-updates (silence badge), Skip-this-release (per-tag, auto-clear on next release), Advanced filter (regex on asset names + monorepo fallback), Pin variant (token-set + glob fingerprint), Inspect APK (decoded manifest sheet).
+- Link sheet (`LinkAppBottomSheet`) sorts installed apps by `InstallerCategory` (`core/domain`): SIDE_STORE (F-Droid / Obtainium / Aurora / Droid-ify / GHS itself) → SIDELOADED → VENDOR_STORE (Samsung / Huawei / Xiaomi / Oppo / vivo / Honor / Amazon) → PLAY_STORE → SYSTEM_UPDATE. `DeviceApp.installerPackageName` (via `PackageManager.getInstallSourceInfo` / pre-30 fallback) + `isUpdatedSystemApp` (via `FLAG_UPDATED_SYSTEM_APP`) feed the classifier. Each row shows a tonal source chip — F-Droid / Obtainium surfaces first; Samsung Authentication Framework and friends drop to the bottom.
+- Auto-update on resume: `OnLifecycleResume` fires `autoCheckForUpdatesIfNeeded` (30-min cooldown) — catches drift after external install while GHS background-killed.
+- External import (`import/`): Obtainium JSON import/export with pre-import summary buckets (imported / already-tracked / non-GitHub-skipped); manual-link-only path. **Skip-on-slow-scan:** after `~5s` `state.isSkipAvailable` flips true → user can fire `OnSkipLongScan` to abort the in-flight backend lookup and move on without waiting for the remaining candidates.
+- Starred picker (`starred/`): scans signed-in user's GitHub stars, surfaces APK-shipping repos. Resumes mid-scan on rate-limit.

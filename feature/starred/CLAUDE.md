@@ -1,37 +1,33 @@
-# CLAUDE.md - Starred Feature
+# Starred Feature
 
-## Purpose
+Locally cached view of user's starred repos. **Presentation-only** — uses `StarredRepository` from `core/domain` directly.
 
-Displays the user's locally saved starred repositories. This is a **presentation-only** feature with no domain or data layer -- it uses `StarredRepository` from `core/domain` directly.
-
-## Module Structure
+## Structure
 
 ```
-feature/starred/
-└── presentation/
-    ├── StarredReposViewModel.kt       # Observes starred repos, handles remove
-    ├── StarredReposState.kt           # starred list, loading
-    ├── StarredReposAction.kt          # RemoveStarred, click actions
-    ├── StarredReposRoot.kt            # Main composable (list of starred repos)
-    ├── model/StarredRepositoryUi.kt   # UI model for display
-    ├── mappers/StarredRepoToUiMapper.kt  # Domain → UI model mapper
-    ├── utils/TimeFormatUtils.kt       # Time formatting utilities
-    └── components/StarredRepositoryItem.kt  # Individual starred repo card
+feature/starred/presentation/
+├── StarredReposViewModel / State / Action / Root
+├── model/StarredRepositoryUi
+├── mappers/StarredRepoToUiMapper
+├── utils/TimeFormatUtils
+└── components/StarredRepositoryItem
 ```
 
-## Key Dependencies
+## Deps
 
-- `StarredRepository` (from `core/domain`) - CRUD operations for starred repos
-- Starred repos are stored locally in Room database (`StarredRepoDao` in `core/data`)
+- `StarredRepository`, `FavouritesRepository`, `AuthenticationState` (core/domain)
+- `ProfileRepository` (feature/profile/domain) — current user login for E20 self-owned badge
+- Local Room (`StarredRepoDao` in core/data)
 
 ## Navigation
 
-Route: `GithubStoreGraph.StarredReposScreen` (data object, no params)
+`GithubStoreGraph.StarredReposScreen`.
 
-## Implementation Notes
+## Notes
 
-- No network calls -- all data is local (Room database)
-- Uses a presentation-layer `StarredRepositoryUi` model mapped from the domain `StarredRepository` entity
-- Starring happens in other features (home, details, search); this feature only displays and removes
-- Includes its own `TimeFormatUtils` for formatting timestamps on starred items
-- The Koin module for this feature is registered in `composeApp/.../app/di/ViewModelsModule.kt` since there's no `data/di/` layer
+- Periodic sync against GitHub's `/user/starred` (gated on `isAuthenticated`). Local Room mirror is the read source.
+- UI model `StarredRepositoryUi` mapped from domain `StarredRepository`.
+- Starring happens elsewhere (home/details/search). This module displays + removes.
+- Inline search bar (E562) when list non-empty — filters by name/owner/description/language client-side. `OnRefresh` clears active query so refreshed list isn't masked behind stale filter.
+- `StarredRepositoryUi.isCurrentUserOwner` set when signed-in user owns the repo (E20).
+- Koin module registered in `composeApp/.../app/di/ViewModelsModule.kt` (no `data/di/`).

@@ -24,16 +24,26 @@ import zed.rainxch.details.data.dto.AttestationsResponse
 import zed.rainxch.core.data.dto.BackendRepoResponse
 import zed.rainxch.core.data.mappers.toDomain
 import zed.rainxch.core.data.mappers.toSummary
+import zed.rainxch.core.data.data_source.TokenStore
 import zed.rainxch.core.data.network.BackendApiClient
 import zed.rainxch.core.data.network.BackendException
+import zed.rainxch.core.data.network.RateLimitedException
+import zed.rainxch.core.data.network.RefreshBudgetExhaustedException
+import zed.rainxch.core.data.network.RefreshCooldownException
+import zed.rainxch.core.data.network.RepoArchivedException
+import zed.rainxch.core.data.network.RepoNotFoundException
+import zed.rainxch.core.data.network.shouldFallbackToGithubOrRethrow as sharedShouldFallback
 import zed.rainxch.core.data.network.GitHubClientProvider
 import zed.rainxch.core.data.network.executeRequest
 import zed.rainxch.core.data.services.LocalizationManager
-import zed.rainxch.core.domain.logging.GitHubStoreLogger
-import zed.rainxch.core.domain.model.GithubRelease
-import zed.rainxch.core.domain.model.GithubRepoSummary
-import zed.rainxch.core.domain.model.GithubUser
-import zed.rainxch.core.domain.model.GithubUserProfile
+import zed.rainxch.core.domain.logging.KomiStoreLogger
+import zed.rainxch.core.domain.model.account.github.GithubRelease
+import zed.rainxch.core.domain.model.account.github.GithubRepoSummary
+import zed.rainxch.core.domain.model.account.github.GithubUser
+import zed.rainxch.core.domain.model.account.github.GithubUserProfile
+import zed.rainxch.core.domain.model.error.RefreshError
+import zed.rainxch.core.domain.model.error.RefreshException
+import zed.rainxch.core.domain.utils.RepoIdCodec
 import zed.rainxch.details.data.utils.ReadmeLocalizationHelper
 import zed.rainxch.details.data.utils.preprocessMarkdown
 import zed.rainxch.details.domain.model.RepoStats
@@ -44,10 +54,46 @@ class DetailsRepositoryImpl(
     private val clientProvider: GitHubClientProvider,
     private val backendApiClient: BackendApiClient,
     private val localizationManager: LocalizationManager,
-    private val logger: GitHubStoreLogger,
+    private val logger: KomiStoreLogger,
     private val cacheManager: CacheManager,
+    private val forgejoClientRegistry: zed.rainxch.core.data.network.ForgejoClientRegistry,
+    private val tokenStore: TokenStore,
 ) : DetailsRepository {
     private val httpClient: HttpClient get() = clientProvider.client
+
+    private suspend fun isSignedIn(): Boolean =
+        try {
+            tokenStore.currentToken()?.accessToken?.trim()?.isNotEmpty() == true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+
+    private fun zed.rainxch.core.data.dto.ForgejoRepoNetworkModel.toForgejoSummary(
+        sourceHost: String,
+    ): GithubRepoSummary = GithubRepoSummary(
+        id = RepoIdCodec.encode(sourceHost, id),
+        name = name,
+        fullName = fullName ?: "${owner.login}/$name",
+        owner = GithubUser(
+            id = owner.id,
+            login = owner.login,
+            avatarUrl = owner.avatarUrl,
+            htmlUrl = owner.htmlUrl,
+        ),
+        description = description,
+        htmlUrl = htmlUrl,
+        stargazersCount = starsCount,
+        forksCount = forksCount,
+        language = language,
+        topics = null,
+        releasesUrl = "$htmlUrl/releases",
+        updatedAt = updatedAt ?: "",
+        pushedAt = pushedAt,
+        defaultBranch = defaultBranch ?: "main",
+        sourceHost = sourceHost,
+    )
 
     @Serializable
     private data class CachedReadme(
@@ -58,31 +104,8 @@ class DetailsRepositoryImpl(
 
     private val readmeHelper = ReadmeLocalizationHelper(localizationManager)
 
-    /**
-     * Decides whether a backend failure should trigger the direct-to-GitHub
-     * fallback. **Side effect:** rethrows `CancellationException` to preserve
-     * structured concurrency — callers don't need a separate CE check before
-     * invoking this.
-     *
-     * Returns `true` for:
-     *   - Any non-[BackendException] throwable (network errors, timeouts,
-     *     parse failures — all treated as infra)
-     *   - [BackendException] with status in 500..599
-     *
-     * Returns `false` for:
-     *   - [BackendException] with status in 400..499 — backend's answer is
-     *     authoritative (cached 404, 401 auth failure, 429 rate limit, etc.)
-     *     and GitHub-direct would return the same answer. **Note:** this
-     *     includes 429 and 408 — if the backend is rate-limiting us or
-     *     timing out on its own pipeline, retrying via GitHub direct
-     *     doesn't help and only burns more quota.
-     */
-    private fun shouldFallbackToGithubOrRethrow(cause: Throwable): Boolean =
-        when (cause) {
-            is CancellationException -> throw cause
-            is BackendException -> cause.statusCode in 500..599
-            else -> true
-        }
+    private fun shouldFallbackToGithubOrRethrow(cause: Throwable, isSignedIn: Boolean): Boolean =
+        sharedShouldFallback(cause, isSignedIn)
 
     private fun BackendRepoResponse.toBackendSummary(): GithubRepoSummary = toSummary()
 
@@ -106,6 +129,7 @@ class DetailsRepositoryImpl(
             topics = topics,
             releasesUrl = "https://api.github.com/repos/${owner.login}/$name/releases{/id}",
             updatedAt = updatedAt,
+            pushedAt = pushedAt,
             defaultBranch = defaultBranch,
         )
 
@@ -128,6 +152,8 @@ class DetailsRepositoryImpl(
                     .toGithubRepoSummary()
             cacheManager.put(cacheKey, result, REPO_DETAILS)
             result
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             cacheManager.getStale<GithubRepoSummary>(cacheKey)?.let { stale ->
                 logger.debug("Network error, using stale cache for repo id=$id")
@@ -140,7 +166,9 @@ class DetailsRepositoryImpl(
     override suspend fun getRepositoryByOwnerAndName(
         owner: String,
         name: String,
+        sourceHost: String?,
     ): GithubRepoSummary {
+        if (sourceHost != null) return getForgejoRepository(owner, name, sourceHost)
         val cacheKey = "details:repo:$owner/$name"
 
         cacheManager.get<GithubRepoSummary>(cacheKey)?.let { cached ->
@@ -148,8 +176,6 @@ class DetailsRepositoryImpl(
             return cached
         }
 
-        // Try backend first. Phase 5.1: backend now lazy-caches unknown
-        // repos, so success rate is high even for non-curated repos.
         val backendResult = backendApiClient.getRepo(owner, name)
         backendResult.fold(
             onSuccess = { backendRepo ->
@@ -159,10 +185,8 @@ class DetailsRepositoryImpl(
                 return result
             },
             onFailure = { e ->
-                if (!shouldFallbackToGithubOrRethrow(e)) {
-                    // Backend 4xx — GitHub would give the same answer.
-                    // Serve stale if we have it, otherwise propagate the
-                    // error so the VM can show the right state.
+                if (!shouldFallbackToGithubOrRethrow(e, isSignedIn())) {
+
                     cacheManager.getStale<GithubRepoSummary>(cacheKey)?.let { stale ->
                         logger.debug("Backend 4xx for $owner/$name, serving stale cache")
                         return stale
@@ -173,7 +197,6 @@ class DetailsRepositoryImpl(
             },
         )
 
-        // Fallback to GitHub API (only reached on backend 5xx / network error)
         return try {
             val result =
                 httpClient
@@ -186,6 +209,8 @@ class DetailsRepositoryImpl(
 
             cacheManager.put(cacheKey, result, REPO_DETAILS)
             result
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             cacheManager.getStale<GithubRepoSummary>(cacheKey)?.let { stale ->
                 logger.debug("Network error, using stale cache for $owner/$name")
@@ -195,11 +220,52 @@ class DetailsRepositoryImpl(
         }
     }
 
+    override suspend fun refreshRepository(
+        owner: String,
+        name: String,
+    ): GithubRepoSummary {
+        val outcome = backendApiClient.refreshRepo(owner, name)
+        outcome.exceptionOrNull()?.let { throw it.toRefreshException() }
+        val backendRepo = outcome.getOrThrow()
+        val result = backendRepo.toBackendSummary()
+        val cacheKey = "details:repo:$owner/$name"
+        cacheManager.put(cacheKey, result, REPO_DETAILS)
+        cacheManager.invalidate("details:repo_id:${result.id}")
+        cacheManager.invalidate("details:stats:v3:$owner/$name")
+        cacheManager.invalidate("details:latest_release:$owner/$name")
+        cacheManager.invalidate("details:releases:$owner/$name")
+        return result
+    }
+
+    private fun Throwable.toRefreshException(): Throwable =
+        when (this) {
+            is CancellationException -> this
+            is RefreshCooldownException ->
+                RefreshException(RefreshError.COOLDOWN, retryAfterSeconds)
+            is RefreshBudgetExhaustedException ->
+                RefreshException(RefreshError.BUDGET_EXHAUSTED, retryAfterSeconds)
+            is RateLimitedException ->
+                RefreshException(RefreshError.COOLDOWN, retryAfterSeconds)
+            is RepoArchivedException ->
+                RefreshException(RefreshError.ARCHIVED)
+            is RepoNotFoundException ->
+                RefreshException(RefreshError.NOT_FOUND)
+            is BackendException -> RefreshException(
+                if (statusCode in 500..599) RefreshError.UPSTREAM else RefreshError.GENERIC,
+            )
+            else -> RefreshException(RefreshError.GENERIC)
+        }
+
     override suspend fun getLatestPublishedRelease(
         owner: String,
         repo: String,
         defaultBranch: String,
+        sourceHost: String?,
     ): GithubRelease? {
+        if (sourceHost != null) {
+            return getForgejoAllReleases(owner, repo, sourceHost)
+                .firstOrNull { !it.isPrerelease }
+        }
         val cacheKey = "details:latest_release:$owner/$repo"
 
         cacheManager.get<GithubRelease>(cacheKey)?.let { cached ->
@@ -232,6 +298,8 @@ class DetailsRepositoryImpl(
 
             cacheManager.put(cacheKey, result, RELEASES)
             result
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             cacheManager.getStale<GithubRelease>(cacheKey)?.let { stale ->
                 logger.debug("Network error, using stale cache for latest release $owner/$repo")
@@ -245,7 +313,9 @@ class DetailsRepositoryImpl(
         owner: String,
         repo: String,
         defaultBranch: String,
+        sourceHost: String?,
     ): List<GithubRelease> {
+        if (sourceHost != null) return getForgejoAllReleases(owner, repo, sourceHost)
         val cacheKey = "details:releases:$owner/$repo"
 
         cacheManager.get<List<GithubRelease>>(cacheKey)?.let { cached ->
@@ -255,8 +325,6 @@ class DetailsRepositoryImpl(
             }
         }
 
-        // Backend-first. Phase 5.1 routes /v1/releases via the backend cache
-        // + ETag revalidation, China-reachable via Gcore/api-direct.
         val backendResult = backendApiClient.getReleases(owner, repo)
         backendResult.fold(
             onSuccess = { releases ->
@@ -273,7 +341,7 @@ class DetailsRepositoryImpl(
                 return result
             },
             onFailure = { e ->
-                if (!shouldFallbackToGithubOrRethrow(e)) {
+                if (!shouldFallbackToGithubOrRethrow(e, isSignedIn())) {
                     cacheManager.getStale<List<GithubRelease>>(cacheKey)?.let { stale ->
                         logger.debug("Backend 4xx for releases $owner/$repo, serving stale cache")
                         return stale
@@ -284,7 +352,6 @@ class DetailsRepositoryImpl(
             },
         )
 
-        // Fallback to GitHub API directly (only reached on backend 5xx / network error)
         return try {
             val releases =
                 httpClient
@@ -312,15 +379,14 @@ class DetailsRepositoryImpl(
         } catch (e: CancellationException) {
             throw e
         } catch (e: SerializationException) {
-            // Parse failure signals a DTO/API drift — surface loudly so it's
-            // findable in logs and crash reports. Still prefer returning a
-            // stale cache rather than throwing, so the UI can keep rendering
-            // the last known good data while we figure out the new shape.
+
             logger.error("Failed to parse releases for $owner/$repo: ${e.message}", e)
             cacheManager.getStale<List<GithubRelease>>(cacheKey)?.let { stale ->
                 logger.debug("Serving stale cache for releases $owner/$repo after parse failure")
                 return stale
             }
+            throw e
+        } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             cacheManager.getStale<List<GithubRelease>>(cacheKey)?.let { stale ->
@@ -338,15 +404,12 @@ class DetailsRepositoryImpl(
         defaultBranch: String,
     ): String? =
         body
-            ?.replace("<details>", "")
-            ?.replace("</details>", "")
-            ?.replace("<summary>", "")
-            ?.replace("</summary>", "")
             ?.replace("\r\n", "\n")
             ?.let { rawMarkdown ->
                 preprocessMarkdown(
                     markdown = rawMarkdown,
                     baseUrl = "https://raw.githubusercontent.com/$owner/$repo/$defaultBranch/",
+                    linkBaseUrl = "https://github.com/$owner/$repo/blob/$defaultBranch/",
                 )
             }
 
@@ -354,18 +417,17 @@ class DetailsRepositoryImpl(
         owner: String,
         repo: String,
         defaultBranch: String,
+        sourceHost: String?,
     ): Triple<String, String?, String>? {
-        val cacheKey = "details:readme:$owner/$repo"
+        if (sourceHost != null) return getForgejoReadme(owner, repo, defaultBranch, sourceHost)
+
+        val cacheKey = "details:readme:v4:$owner/$repo"
 
         cacheManager.get<CachedReadme>(cacheKey)?.let { cached ->
             logger.debug("Cache hit for readme $owner/$repo")
             return Triple(cached.content, cached.languageCode, cached.path)
         }
 
-        // Backend-first. Phase 5.2: /v1/readme proxies GitHub's contents API,
-        // which returns base64-encoded markdown — different shape from the
-        // raw.githubusercontent.com path below, but the post-processing
-        // pipeline is the same.
         val backendResult = backendApiClient.getReadme(owner, repo)
         backendResult.fold(
             onSuccess = { dto ->
@@ -382,26 +444,22 @@ class DetailsRepositoryImpl(
                     )
                     return processed
                 }
-                // Decode/processing failed — fall through to the raw-URL path
+
                 logger.debug("Backend readme decode failed for $owner/$repo, falling back to raw URL")
             },
             onFailure = { e ->
-                if (!shouldFallbackToGithubOrRethrow(e)) {
+                if (!shouldFallbackToGithubOrRethrow(e, isSignedIn())) {
                     cacheManager.getStale<CachedReadme>(cacheKey)?.let { stale ->
                         logger.debug("Backend 4xx for readme $owner/$repo, serving stale cache")
                         return Triple(stale.content, stale.languageCode, stale.path)
                     }
-                    // No stale — no readme exists or user can't access. Treat
-                    // as "no readme" rather than propagating as an error;
-                    // matches how fetchReadmeFromApi returned null.
+
                     return null
                 }
                 logger.debug("Backend infra error for readme $owner/$repo (${e.message}), falling back to raw URL")
             },
         )
 
-        // Fallback to raw.githubusercontent.com (only reached on backend
-        // infra error or on successful backend response that we couldn't decode)
         val result = fetchReadmeFromApi(owner, repo, defaultBranch)
 
         if (result != null) {
@@ -424,19 +482,18 @@ class DetailsRepositoryImpl(
         repo: String,
         defaultBranch: String,
     ): Triple<String, String?, String>? {
-        // GitHub's contents API base64-encodes with embedded newlines; Mime
-        // variant tolerates all whitespace transparently so we don't have
-        // to pre-strip. Narrow catch: only IAE is decode-related, other
-        // throwables (OOM, etc.) propagate.
+
+        val rawContent = dto.content ?: return null
         val decoded = try {
-            Base64.Mime.decode(dto.content).decodeToString()
+            Base64.Mime.decode(rawContent).decodeToString()
         } catch (e: IllegalArgumentException) {
             logger.warn("Failed to base64-decode backend readme for $owner/$repo: ${e.message}")
             return null
         }
         val path = dto.path?.takeIf { it.isNotBlank() } ?: "README.md"
         val baseUrl = "https://raw.githubusercontent.com/$owner/$repo/$defaultBranch/"
-        val processed = preprocessMarkdown(markdown = decoded, baseUrl = baseUrl)
+        val linkBaseUrl = "https://github.com/$owner/$repo/blob/$defaultBranch/"
+        val processed = preprocessMarkdown(markdown = decoded, baseUrl = baseUrl, linkBaseUrl = linkBaseUrl)
         val detectedLang = readmeHelper.detectReadmeLanguage(processed)
         logger.debug("Fetched README via backend (detected language: ${detectedLang ?: "unknown"})")
         return Triple(processed, detectedLang, path)
@@ -458,7 +515,8 @@ class DetailsRepositoryImpl(
                     }.getOrNull()
 
             if (rawMarkdown != null) {
-                val processed = preprocessMarkdown(markdown = rawMarkdown, baseUrl = baseUrl)
+                val linkBaseUrl = "https://github.com/$owner/$repo/blob/$defaultBranch/"
+                val processed = preprocessMarkdown(markdown = rawMarkdown, baseUrl = baseUrl, linkBaseUrl = linkBaseUrl)
                 val detectedLang = readmeHelper.detectReadmeLanguage(processed)
                 logger.debug("Fetched README.md (detected language: ${detectedLang ?: "unknown"})")
                 Triple(processed, detectedLang, path)
@@ -466,6 +524,8 @@ class DetailsRepositoryImpl(
                 logger.error("Failed to fetch README.md for $owner/$repo")
                 null
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             logger.error("Failed to fetch README.md: ${e.message}")
             null
@@ -475,60 +535,33 @@ class DetailsRepositoryImpl(
     override suspend fun getRepoStats(
         owner: String,
         repo: String,
+        sourceHost: String?,
     ): RepoStats {
-        val cacheKey = "details:stats:$owner/$repo"
+        if (sourceHost != null) return getForgejoRepoStats(owner, repo, sourceHost)
+
+        val cacheKey = "details:stats:v3:$owner/$repo"
 
         cacheManager.get<RepoStats>(cacheKey)?.let { cached ->
             logger.debug("Cache hit for repo stats $owner/$repo")
             return cached
         }
 
-        // Try backend first — provides stars/forks/downloadCount.
-        // Backend doesn't have openIssues/license, so supplement with a
-        // best-effort GitHub call for those fields. If GitHub is blocked
-        // (e.g. for users in China), we still show the backend data.
         val backendResult = backendApiClient.getRepo(owner, repo)
         backendResult.fold(
             onSuccess = { backendRepo ->
                 logger.debug("Backend hit for repo stats $owner/$repo")
-
-                // Explicit try/catch (not runCatching) so cancellation
-                // propagates — runCatching would swallow it and break
-                // structured concurrency.
-                val githubInfo =
-                    try {
-                        httpClient.executeRequest<RepoInfoNetwork> {
-                            get("/repos/$owner/$repo") {
-                                header(HttpHeaders.Accept, "application/vnd.github+json")
-                            }
-                        }.getOrNull()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        logger.debug("GitHub enrichment failed for $owner/$repo: ${e.message}")
-                        null
-                    }
-
-                // If the GitHub enrichment didn't land, reuse the stale
-                // cached openIssues/license from a previous successful
-                // resolve. Prevents a transient GitHub failure from
-                // clobbering real values with zeros/nulls.
-                val stale = if (githubInfo == null) cacheManager.getStale<RepoStats>(cacheKey) else null
-
                 val result = RepoStats(
                     stars = backendRepo.stargazersCount,
                     forks = backendRepo.forksCount,
-                    openIssues = githubInfo?.openIssues ?: stale?.openIssues ?: 0,
-                    license = githubInfo?.license?.spdxId
-                        ?: githubInfo?.license?.name
-                        ?: stale?.license,
+                    openIssues = backendRepo.openIssuesCount,
+                    license = backendRepo.license?.spdxId ?: backendRepo.license?.name,
                     totalDownloads = backendRepo.downloadCount,
                 )
                 cacheManager.put(cacheKey, result, REPO_STATS)
                 return result
             },
             onFailure = { e ->
-                if (!shouldFallbackToGithubOrRethrow(e)) {
+                if (!shouldFallbackToGithubOrRethrow(e, isSignedIn())) {
                     cacheManager.getStale<RepoStats>(cacheKey)?.let { stale ->
                         logger.debug("Backend 4xx for stats $owner/$repo, serving stale cache")
                         return stale
@@ -539,7 +572,6 @@ class DetailsRepositoryImpl(
             },
         )
 
-        // Fallback to GitHub API
         return try {
             logger.debug("Backend miss for stats $owner/$repo, falling back to GitHub API")
             val info =
@@ -561,6 +593,8 @@ class DetailsRepositoryImpl(
 
             cacheManager.put(cacheKey, result, REPO_STATS)
             result
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             cacheManager.getStale<RepoStats>(cacheKey)?.let { stale ->
                 logger.debug("Network error, using stale cache for stats $owner/$repo")
@@ -578,8 +612,6 @@ class DetailsRepositoryImpl(
             return cached
         }
 
-        // Backend-first. Phase 5.3: /v1/user proxies GitHub's users API with
-        // aggressive edge caching (7-day TTL on Gcore).
         val backendResult = backendApiClient.getUser(username)
         backendResult.fold(
             onSuccess = { user ->
@@ -588,7 +620,7 @@ class DetailsRepositoryImpl(
                 return result
             },
             onFailure = { e ->
-                if (!shouldFallbackToGithubOrRethrow(e)) {
+                if (!shouldFallbackToGithubOrRethrow(e, isSignedIn())) {
                     cacheManager.getStale<GithubUserProfile>(cacheKey)?.let { stale ->
                         logger.debug("Backend 4xx for profile $username, serving stale cache")
                         return stale
@@ -599,7 +631,6 @@ class DetailsRepositoryImpl(
             },
         )
 
-        // Fallback to GitHub direct (only reached on backend 5xx / network error)
         return try {
             val user =
                 httpClient
@@ -612,6 +643,8 @@ class DetailsRepositoryImpl(
             val result = user.toDomainProfile()
             cacheManager.put(cacheKey, result, USER_PROFILE)
             result
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             cacheManager.getStale<GithubUserProfile>(cacheKey)?.let { stale ->
                 logger.debug("Network error, using stale cache for profile $username")
@@ -638,6 +671,221 @@ class DetailsRepositoryImpl(
             twitterUsername = twitterUsername,
         )
 
+    private suspend fun getForgejoRepository(
+        owner: String,
+        name: String,
+        sourceHost: String,
+    ): GithubRepoSummary {
+        val cacheKey = "details:repo:forgejo:$sourceHost:$owner/$name"
+        cacheManager.get<GithubRepoSummary>(cacheKey)?.let { return it }
+        val client = forgejoClientRegistry.clientFor(sourceHost)
+        return try {
+            val result = client.getRepository(owner, name).getOrThrow()
+                .toForgejoSummary(sourceHost)
+            cacheManager.put(cacheKey, result, REPO_DETAILS)
+            result
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            cacheManager.getStale<GithubRepoSummary>(cacheKey)?.let { return it }
+            throw e
+        }
+    }
+
+    private suspend fun getForgejoAllReleases(
+        owner: String,
+        repo: String,
+        sourceHost: String,
+    ): List<GithubRelease> {
+
+        val cacheKey = "details:releases:forgejo:v2:$sourceHost:$owner/$repo"
+        cacheManager.get<List<GithubRelease>>(cacheKey)?.takeIf { it.isNotEmpty() }?.let { return it }
+        val client = forgejoClientRegistry.clientFor(sourceHost)
+        return try {
+            val releases = client.getReleases(owner, repo).getOrNull().orEmpty()
+            val result = releases
+                .filter { it.draft != true }
+                .map { network ->
+                    val processedBody = network.body?.let {
+                        processForgejoBody(it, sourceHost, owner, repo)
+                    }
+                    network.copy(body = processedBody).toDomain()
+                }
+                .sortedByDescending { it.publishedAt }
+            if (result.isNotEmpty()) cacheManager.put(cacheKey, result, RELEASES)
+            result
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            cacheManager.getStale<List<GithubRelease>>(cacheKey)?.let { return it }
+            throw e
+        }
+    }
+
+    private fun processForgejoBody(
+        body: String,
+        sourceHost: String,
+        owner: String,
+        repo: String,
+    ): String {
+
+        val normalized = body.replace("\r\n", "\n")
+        val baseUrl = "https://$sourceHost/$owner/$repo/raw/branch/HEAD/"
+        val linkBaseUrl = "https://$sourceHost/$owner/$repo/src/branch/HEAD/"
+        return preprocessMarkdown(markdown = normalized, baseUrl = baseUrl, linkBaseUrl = linkBaseUrl)
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    private suspend fun getForgejoReadme(
+        owner: String,
+        repo: String,
+        defaultBranch: String,
+        sourceHost: String,
+    ): Triple<String, String?, String>? {
+
+        val cacheKey = "details:readme:forgejo:v2:$sourceHost:$owner/$repo"
+        cacheManager.get<CachedReadme>(cacheKey)?.let {
+            return Triple(it.content, it.languageCode, it.path)
+        }
+        val client = forgejoClientRegistry.clientFor(sourceHost)
+
+        val dto = client.getContentsFile(owner, repo, "README.md", defaultBranch).getOrNull()
+            ?: client.listContentsRoot(owner, repo, defaultBranch).getOrNull()
+                ?.firstOrNull { entry ->
+                    entry.type == "file" && entry.name?.let { READMEFileNameRegex.matches(it) } == true
+                }
+                ?.let { entry ->
+                    client.getContentsFile(owner, repo, entry.path ?: entry.name!!, defaultBranch).getOrNull()
+                }
+            ?: run {
+                cacheManager.getStale<CachedReadme>(cacheKey)?.let {
+                    return Triple(it.content, it.languageCode, it.path)
+                }
+                return null
+            }
+
+        val rawContent = dto.content ?: return null
+        val decoded = try {
+            Base64.Mime.decode(rawContent).decodeToString()
+        } catch (e: IllegalArgumentException) {
+            logger.warn("Failed to decode Forgejo readme for $sourceHost/$owner/$repo: ${e.message}")
+            return null
+        }
+        val path = dto.path?.takeIf { it.isNotBlank() } ?: "README.md"
+
+        val baseUrl = "https://$sourceHost/$owner/$repo/raw/branch/$defaultBranch/"
+        val linkBaseUrl = "https://$sourceHost/$owner/$repo/src/branch/$defaultBranch/"
+        val processed = preprocessMarkdown(markdown = decoded, baseUrl = baseUrl, linkBaseUrl = linkBaseUrl)
+        val detected = readmeHelper.detectReadmeLanguage(processed)
+        cacheManager.put(
+            cacheKey,
+            CachedReadme(content = processed, languageCode = detected, path = path),
+            README,
+        )
+        return Triple(processed, detected, path)
+    }
+
+    private companion object {
+
+        private val READMEFileNameRegex = Regex("""^README(\..+)?$""", RegexOption.IGNORE_CASE)
+    }
+
+    private suspend fun getForgejoRepoStats(
+        owner: String,
+        repo: String,
+        sourceHost: String,
+    ): RepoStats {
+
+        val cacheKey = "details:stats:forgejo:v2:$sourceHost:$owner/$repo"
+        cacheManager.get<RepoStats>(cacheKey)?.let { return it }
+        val client = forgejoClientRegistry.clientFor(sourceHost)
+        return try {
+            val info = client.getRepository(owner, repo).getOrThrow()
+
+            val license = detectForgejoLicense(client, owner, repo, info.defaultBranch ?: "main")
+            val downloads = sumForgejoReleaseDownloads(sourceHost, owner, repo)
+            val result = RepoStats(
+                stars = info.starsCount,
+                forks = info.forksCount,
+                openIssues = info.openIssuesCount,
+                license = license,
+                totalDownloads = downloads,
+            )
+            cacheManager.put(cacheKey, result, REPO_STATS)
+            result
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            cacheManager.getStale<RepoStats>(cacheKey)?.let { return it }
+            throw e
+        }
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    private suspend fun detectForgejoLicense(
+        client: zed.rainxch.core.data.network.ForgejoApiClient,
+        owner: String,
+        repo: String,
+        ref: String,
+    ): String? {
+
+        val candidates = listOf("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING")
+        val dto = candidates.firstNotNullOfOrNull { name ->
+            client.getContentsFile(owner, repo, name, ref).getOrNull()
+        } ?: return null
+        val raw = dto.content ?: return null
+        val text = try {
+            Base64.Mime.decode(raw).decodeToString().take(400)
+        } catch (e: IllegalArgumentException) {
+            return null
+        }
+        return spdxFromLicenseHeader(text)
+    }
+
+    private fun spdxFromLicenseHeader(text: String): String? {
+        val upper = text.uppercase()
+        return when {
+            upper.contains("GNU AFFERO GENERAL PUBLIC LICENSE") && upper.contains("VERSION 3") -> "AGPL-3.0"
+            upper.contains("GNU LESSER GENERAL PUBLIC LICENSE") && upper.contains("VERSION 3") -> "LGPL-3.0"
+            upper.contains("GNU LESSER GENERAL PUBLIC LICENSE") && upper.contains("VERSION 2.1") -> "LGPL-2.1"
+            upper.contains("GNU GENERAL PUBLIC LICENSE") && upper.contains("VERSION 3") -> "GPL-3.0"
+            upper.contains("GNU GENERAL PUBLIC LICENSE") && upper.contains("VERSION 2") -> "GPL-2.0"
+            upper.contains("APACHE LICENSE") && upper.contains("VERSION 2.0") -> "Apache-2.0"
+            upper.contains("MIT LICENSE") || (upper.startsWith("MIT ") && upper.contains("PERMISSION")) -> "MIT"
+            upper.contains("BSD 3-CLAUSE") || upper.contains("BSD-3-CLAUSE") -> "BSD-3-Clause"
+            upper.contains("BSD 2-CLAUSE") || upper.contains("BSD-2-CLAUSE") -> "BSD-2-Clause"
+            upper.contains("MOZILLA PUBLIC LICENSE") && upper.contains("VERSION 2.0") -> "MPL-2.0"
+            upper.contains("THE UNLICENSE") || upper.contains("UNLICENSE") -> "Unlicense"
+            upper.contains("CREATIVE COMMONS") && upper.contains("CC0") -> "CC0-1.0"
+            upper.contains("EUROPEAN UNION PUBLIC LICENCE") -> "EUPL-1.2"
+            else -> null
+        }
+    }
+
+    private suspend fun sumForgejoReleaseDownloads(
+        sourceHost: String,
+        owner: String,
+        repo: String,
+    ): Long {
+        val cacheKey = "details:releases:forgejo:$sourceHost:$owner/$repo"
+        val cached = cacheManager.get<List<GithubRelease>>(cacheKey).orEmpty()
+        val releases = if (cached.isNotEmpty()) {
+            cached
+        } else {
+            try {
+                getForgejoAllReleases(owner, repo, sourceHost)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.debug("Forgejo downloads sum: releases fetch failed: ${e.message}")
+                return 0L
+            }
+        }
+        return releases.sumOf { release ->
+            release.assets.sumOf { it.downloadCount }
+        }
+    }
+
     override suspend fun checkAttestations(
         owner: String,
         repo: String,
@@ -652,9 +900,50 @@ class DetailsRepositoryImpl(
                         }
                     }.getOrNull()
             response != null && response.attestations.isNotEmpty()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.debug("Attestation check failed for $owner/$repo: ${e.message}")
             false
         }
 
+    override suspend fun fetchRawMarkdown(url: String): String? {
+        val fetchUrl = if (url.startsWith("https://github.com/") && url.contains("/blob/")) {
+            url.replaceFirst("https://github.com/", "https://raw.githubusercontent.com/")
+               .replaceFirst("/blob/", "/")
+        } else {
+            url
+        }
+
+        return try {
+            val rawMarkdown = httpClient.executeRequest<String> {
+                get(fetchUrl)
+            }.getOrNull()
+
+            if (rawMarkdown != null) {
+                val match = Regex("""https://(?:raw\.githubusercontent\.com|github\.com)/([^/]+)/([^/]+)/(?:blob/)?([^/]+)/(.*)""").find(url)
+                if (match != null) {
+                    val owner = match.groupValues[1]
+                    val repo = match.groupValues[2]
+                    val branch = match.groupValues[3]
+                    val path = match.groupValues[4]
+
+                    val basePath = path.substringBeforeLast("/", "")
+                    val pathPrefix = if (basePath.isNotEmpty()) "$basePath/" else ""
+
+                    val baseUrl = "https://raw.githubusercontent.com/$owner/$repo/$branch/$pathPrefix"
+                    val linkBaseUrl = "https://github.com/$owner/$repo/blob/$branch/$pathPrefix"
+
+                    preprocessMarkdown(markdown = rawMarkdown, baseUrl = baseUrl, linkBaseUrl = linkBaseUrl)
+                } else {
+                    rawMarkdown
+                }
+            } else null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.error("Failed to fetch raw markdown from $url: ${e.message}")
+            null
+        }
+    }
 }

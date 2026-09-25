@@ -26,6 +26,12 @@ interface InstalledAppDao {
     @Query("SELECT * FROM installed_apps WHERE repoId = :repoId")
     fun getAppByRepoIdAsFlow(repoId: Long): Flow<InstalledAppEntity?>
 
+    @Query("SELECT * FROM installed_apps WHERE repoId = :repoId ORDER BY installedAt DESC")
+    suspend fun getAppsByRepoId(repoId: Long): List<InstalledAppEntity>
+
+    @Query("SELECT * FROM installed_apps WHERE repoId = :repoId ORDER BY installedAt DESC")
+    fun getAppsByRepoIdAsFlow(repoId: Long): Flow<List<InstalledAppEntity>>
+
     @Query("SELECT COUNT(*) FROM installed_apps WHERE isUpdateAvailable = 1")
     fun getUpdateCount(): Flow<Int>
 
@@ -41,10 +47,13 @@ interface InstalledAppDao {
     @Query("DELETE FROM installed_apps WHERE packageName = :packageName")
     suspend fun deleteByPackageName(packageName: String)
 
+    @Query("SELECT packageName FROM installed_apps")
+    suspend fun getTrackedPackageNames(): List<String>
+
     @Query(
         """
-    UPDATE installed_apps 
-    SET isUpdateAvailable = :available, 
+    UPDATE installed_apps
+    SET isUpdateAvailable = :available,
         latestVersion = :version,
         latestAssetName = :assetName,
         latestAssetUrl = :assetUrl,
@@ -74,6 +83,9 @@ interface InstalledAppDao {
     @Query("UPDATE installed_apps SET includePreReleases = :enabled WHERE packageName = :packageName")
     suspend fun updateIncludePreReleases(packageName: String, enabled: Boolean)
 
+    @Query("UPDATE installed_apps SET updateCheckEnabled = :enabled WHERE packageName = :packageName")
+    suspend fun updateUpdateCheckEnabled(packageName: String, enabled: Boolean)
+
     @Query(
         """
         UPDATE installed_apps
@@ -88,16 +100,6 @@ interface InstalledAppDao {
         fallback: Boolean,
     )
 
-    /**
-     * Sets the user's preferred asset variant along with its multi-layer
-     * fingerprint (token set, glob pattern, same-position metadata).
-     * Always clears the "stale" flag in the same write because the user
-     * has just made an explicit choice — whatever was stored before is
-     * no longer stale, even if the new variant is the same value.
-     *
-     * Pass `null` for [variant] (and the other fingerprint fields) to
-     * unpin and fall back to the platform auto-picker.
-     */
     @Query(
         """
         UPDATE installed_apps
@@ -119,11 +121,6 @@ interface InstalledAppDao {
         siblingCount: Int?,
     )
 
-    /**
-     * Sets `preferredVariantStale` for [packageName]. Used by
-     * `checkForUpdates` when the persisted variant cannot be matched
-     * against the assets in a fresh release.
-     */
     @Query(
         """
         UPDATE installed_apps
@@ -142,15 +139,46 @@ interface InstalledAppDao {
         timestamp: Long,
     )
 
-    /**
-     * Sets the path + version + asset name of a
-     * downloaded-but-not-yet-installed asset. Pass all `null` to
-     * clear (e.g. after the user installs the file).
-     *
-     * The version + asset name pair is what the Details screen uses
-     * to detect "the parked file matches the currently-selected
-     * release" and skip the redundant re-download.
-     */
+    @Query(
+        """
+        UPDATE installed_apps
+           SET skippedReleaseTag = :tag,
+               isUpdateAvailable = CASE WHEN :tag IS NULL THEN isUpdateAvailable ELSE 0 END
+         WHERE packageName = :packageName
+        """,
+    )
+    suspend fun setSkippedReleaseTag(
+        packageName: String,
+        tag: String?,
+    )
+
+    @Query(
+        """
+        SELECT * FROM installed_apps
+         WHERE skippedReleaseTag IS NOT NULL
+         ORDER BY appName COLLATE NOCASE ASC
+        """,
+    )
+    fun getAppsWithSkippedReleaseTag(): Flow<List<InstalledAppEntity>>
+
+    @Query(
+        """
+        UPDATE installed_apps
+           SET installedVersion = :installedVersion,
+               installedVersionName = :installedVersionName,
+               installedVersionCode = :installedVersionCode,
+               isUpdateAvailable = :isUpdateAvailable
+         WHERE packageName = :packageName
+        """,
+    )
+    suspend fun updateInstalledVersion(
+        packageName: String,
+        installedVersion: String,
+        installedVersionName: String?,
+        installedVersionCode: Long,
+        isUpdateAvailable: Boolean,
+    )
+
     @Query(
         """
         UPDATE installed_apps
@@ -167,14 +195,6 @@ interface InstalledAppDao {
         assetName: String?,
     )
 
-    /**
-     * Atomically clears the "update available" badge and any cached
-     * latest-release metadata for [packageName], while bumping
-     * `lastCheckedAt`. Used by `checkForUpdates` whenever the current
-     * filter / release window yields no match: without this, a user who
-     * tightens their asset filter would keep the stale badge and the
-     * download button would point at an asset that no longer matches.
-     */
     @Query(
         """
         UPDATE installed_apps

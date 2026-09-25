@@ -18,19 +18,26 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.getString
-import zed.rainxch.core.domain.logging.GitHubStoreLogger
-import zed.rainxch.core.domain.model.Platform
-import zed.rainxch.core.domain.model.RateLimitException
+import zed.rainxch.core.domain.isDesktop
+import zed.rainxch.core.domain.logging.KomiStoreLogger
+import zed.rainxch.core.domain.model.system.Platform
+import zed.rainxch.core.domain.repository.BrowseFilterStore
+import zed.rainxch.core.domain.model.error.RateLimitException
+import zed.rainxch.core.domain.model.account.github.GithubRepoSummary
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
+import zed.rainxch.core.domain.model.installation.hasActualUpdate
+import zed.rainxch.core.domain.model.installation.isReallyInstalled
 import zed.rainxch.core.domain.repository.FavouritesRepository
+import zed.rainxch.core.domain.repository.HiddenReposRepository
 import zed.rainxch.core.domain.repository.InstalledAppsRepository
-import zed.rainxch.core.domain.repository.SearchHistoryRepository
+import zed.rainxch.domain.repository.SearchHistoryRepository
 import zed.rainxch.core.domain.repository.SeenReposRepository
 import zed.rainxch.core.domain.repository.StarredRepository
-import zed.rainxch.core.domain.repository.TelemetryRepository
 import zed.rainxch.core.domain.repository.TweaksRepository
+import zed.rainxch.core.domain.repository.UserSessionRepository
 import zed.rainxch.core.domain.use_cases.SyncInstalledAppsUseCase
-import zed.rainxch.core.domain.utils.ClipboardHelper
-import zed.rainxch.core.domain.utils.ShareManager
+import zed.rainxch.core.domain.helpers.ClipboardHelper
+import zed.rainxch.core.domain.helpers.ShareManager
 import zed.rainxch.core.presentation.model.DiscoveryRepositoryUi
 import zed.rainxch.core.presentation.utils.toUi
 import zed.rainxch.domain.repository.SearchRepository
@@ -39,8 +46,13 @@ import zed.rainxch.githubstore.core.presentation.res.failed_to_share_link
 import zed.rainxch.githubstore.core.presentation.res.link_copied_to_clipboard
 import zed.rainxch.githubstore.core.presentation.res.no_github_link_in_clipboard
 import zed.rainxch.githubstore.core.presentation.res.explore_error
+import zed.rainxch.githubstore.core.presentation.res.rate_limit_exceeded
+import zed.rainxch.githubstore.core.presentation.res.rate_limit_exceeded_retry_in
 import zed.rainxch.githubstore.core.presentation.res.search_failed
 import zed.rainxch.search.presentation.mappers.toDomain
+import zed.rainxch.search.presentation.model.ProgrammingLanguageUi
+import zed.rainxch.search.presentation.model.SearchSourceUi
+import zed.rainxch.search.presentation.model.SortByUi
 import zed.rainxch.search.presentation.utils.isEntirelyGithubUrls
 import zed.rainxch.search.presentation.utils.parseGithubUrls
 
@@ -50,14 +62,17 @@ class SearchViewModel(
     private val syncInstalledAppsUseCase: SyncInstalledAppsUseCase,
     private val favouritesRepository: FavouritesRepository,
     private val starredRepository: StarredRepository,
-    private val logger: GitHubStoreLogger,
+    private val logger: KomiStoreLogger,
     private val shareManager: ShareManager,
     private val platform: Platform,
     private val clipboardHelper: ClipboardHelper,
     private val tweaksRepository: TweaksRepository,
     private val seenReposRepository: SeenReposRepository,
     private val searchHistoryRepository: SearchHistoryRepository,
-    private val telemetryRepository: TelemetryRepository,
+    private val userSessionRepository: UserSessionRepository,
+    private val hiddenReposRepository: HiddenReposRepository,
+    private val browseFilterStore: BrowseFilterStore,
+    private val initialPlatform: DiscoveryPlatform? = null,
 ) : ViewModel() {
     private var hasLoadedInitialData = false
     private var currentSearchJob: Job? = null
@@ -65,10 +80,13 @@ class SearchViewModel(
     private var explorePage = 1
     private var lastExploreQuery = ""
 
+    @Volatile
+    private var currentUserLogin: String? = null
+
     private val exploreLog = logger.withTag("SearchExplore")
 
     companion object {
-        private const val MIN_QUERY_LENGTH = 3
+        private const val MIN_QUERY_LENGTH = 2
     }
 
     private val _state = MutableStateFlow(SearchState())
@@ -76,43 +94,65 @@ class SearchViewModel(
         _state
             .onStart {
                 if (!hasLoadedInitialData) {
+                    initialPlatform?.let { platform ->
+                        _state.update { it.copy(selectedSearchPlatform = platform) }
+                    }
+
+                    observeCurrentUser()
                     syncSystemState()
 
                     observeInstalledApps()
                     observeFavouriteApps()
                     observeStarredRepos()
-                    observeLiquidGlassEnabled()
                     observeSeenRepos()
+                    observeHiddenRepos()
                     observeHideSeenEnabled()
+                    observeCustomForgeHosts()
                     observeClipboardSetting()
                     observeSearchHistory()
                     checkClipboardForLinks()
+                    if (isDesktop()) observeBrowseFilter()
 
                     hasLoadedInitialData = true
                 }
             }
-            .map { it.copy(visibleRepos = computeVisibleRepos(it)) }
+            .map {
+                it.copy(
+                    visibleRepos = computeVisibleRepos(it),
+                    activeFilterCount = computeActiveFilterCount(it),
+                )
+            }
             .stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.WhileSubscribed(5_000L),
                 initialValue = SearchState(),
             )
 
-    private fun computeVisibleRepos(state: SearchState): ImmutableList<DiscoveryRepositoryUi> =
-        if (state.isHideSeenEnabled && state.seenRepoIds.isNotEmpty()) {
-            state.repositories.filter { it.repository.id !in state.seenRepoIds }.toImmutableList()
-        } else {
-            state.repositories
-        }
+    private fun computeVisibleRepos(state: SearchState): ImmutableList<DiscoveryRepositoryUi> {
+        val hidden = state.hiddenRepoIds
+        val needsHideSeenFilter = state.isHideSeenEnabled && state.seenRepoIds.isNotEmpty()
+        if (hidden.isEmpty() && !needsHideSeenFilter) return state.repositories
+        return state.repositories
+            .filter { repo ->
+                repo.repository.id !in hidden &&
+                        (!needsHideSeenFilter || repo.repository.id !in state.seenRepoIds)
+            }
+            .toImmutableList()
+    }
 
-    private fun observeLiquidGlassEnabled() {
+    private fun computeActiveFilterCount(state: SearchState): Int {
+        var count = 0
+        if (state.selectedSource != SearchSourceUi.GitHub) count++
+        if (state.selectedSearchPlatform != DiscoveryPlatform.All) count++
+        if (state.selectedLanguage != ProgrammingLanguageUi.All) count++
+        if (state.selectedSortBy != SortByUi.BestMatch) count++
+        return count
+    }
+
+    private fun observeBrowseFilter() {
         viewModelScope.launch {
-            tweaksRepository.getLiquidGlassEnabled().collect { enabled ->
-                _state.update {
-                    it.copy(
-                        isLiquidGlassEnabled = enabled,
-                    )
-                }
+            browseFilterStore.platform.collect { p ->
+                onAction(SearchAction.OnPlatformTypeSelected(p))
             }
         }
     }
@@ -142,7 +182,60 @@ class SearchViewModel(
         }
     }
 
-    private val _events = Channel<SearchEvent>()
+    private fun observeCustomForgeHosts() {
+        viewModelScope.launch {
+            tweaksRepository.getCustomForgeHosts().collect { hosts ->
+                val base = listOf(SearchSourceUi.GitHub, SearchSourceUi.Codeberg)
+                val extra = hosts
+                    .filter { it.isNotBlank() && !it.equals("codeberg.org", ignoreCase = true) }
+                    .sorted()
+                    .map { SearchSourceUi.CustomForge(it) }
+                val all = (base + extra).toImmutableList()
+                _state.update { current ->
+                    val stillValid = all.contains(current.selectedSource)
+                    current.copy(
+                        availableSources = all,
+                        selectedSource = if (stillValid) current.selectedSource else SearchSourceUi.GitHub,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun observeHiddenRepos() {
+        viewModelScope.launch {
+            hiddenReposRepository.getAllHiddenRepoIds().collect { ids ->
+                _state.update { it.copy(hiddenRepoIds = ids) }
+            }
+        }
+    }
+
+    private fun observeCurrentUser() {
+        viewModelScope.launch {
+            userSessionRepository.getUser().collect { user ->
+                currentUserLogin = user?.username
+                val login = user?.username
+                _state.update { current ->
+                    current.copy(
+                        repositories =
+                            current.repositories
+                                .map { repo ->
+                                    repo.copy(
+                                        isCurrentUserOwner = login != null &&
+                                                repo.repository.owner.login.equals(
+                                                    login,
+                                                    ignoreCase = true
+                                                ),
+                                    )
+                                }
+                                .toImmutableList(),
+                    )
+                }
+            }
+        }
+    }
+
+    private val _events = Channel<SearchEvent>(capacity = Channel.BUFFERED)
     val events = _events.receiveAsFlow()
 
     private fun syncSystemState() {
@@ -152,6 +245,8 @@ class SearchViewModel(
                 if (result.isFailure) {
                     logger.warn("Initial sync had issues: ${result.exceptionOrNull()?.message}")
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.error("Initial sync failed: ${e.message}")
             }
@@ -189,6 +284,8 @@ class SearchViewModel(
                         )
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.debug("Failed to read clipboard: ${e.message}")
             }
@@ -218,16 +315,16 @@ class SearchViewModel(
             installedAppsRepository
                 .getAllInstalledApps()
                 .collect { installedApps ->
-                    val installedMap = installedApps.associateBy { it.repoId }
+                    val installedMap = installedApps.groupBy { it.repoId }
                     _state.update { current ->
                         current.copy(
                             repositories =
                                 current.repositories
                                     .map { searchRepo ->
-                                        val app = installedMap[searchRepo.repository.id]
+                                        val apps = installedMap[searchRepo.repository.id].orEmpty()
                                         searchRepo.copy(
-                                            isInstalled = app != null,
-                                            isUpdateAvailable = app?.isUpdateAvailable ?: false,
+                                            isInstalled = apps.any { it.isReallyInstalled() },
+                                            isUpdateAvailable = apps.any { it.hasActualUpdate() },
                                         )
                                     }.toImmutableList(),
                         )
@@ -304,138 +401,144 @@ class SearchViewModel(
             }
         }
 
-        currentSearchJob =
-            viewModelScope.launch {
-                _state.update {
-                    it.copy(
-                        isLoading = isInitial,
-                        isLoadingMore = !isInitial,
-                        errorMessage = null,
-                        repositories =
-                            if (isInitial) {
-                                persistentListOf()
-                            } else {
-                                it.repositories
-                            },
-                        totalCount = if (isInitial) null else it.totalCount,
-                        passthroughAttempted =
-                            if (isInitial) null else it.passthroughAttempted,
-                    )
-                }
+        currentSearchJob = viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    isLoading = isInitial,
+                    isLoadingMore = !isInitial,
+                    errorMessage = null,
+                    repositories =
+                        if (isInitial) {
+                            persistentListOf()
+                        } else {
+                            it.repositories
+                        },
+                    totalCount = if (isInitial) null else it.totalCount,
+                    passthroughAttempted =
+                        if (isInitial) null else it.passthroughAttempted,
+                )
+            }
 
-                try {
-                    val installedMap =
-                        installedAppsRepository
-                            .getAllInstalledApps()
-                            .first()
-                            .associateBy { it.repoId }
-                    val favoritesMap =
-                        favouritesRepository
-                            .getAllFavorites()
-                            .first()
-                            .associateBy { it.repoId }
-                    val starredReposMap =
-                        starredRepository
-                            .getAllStarred()
-                            .first()
-                            .associateBy { it.repoId }
+            try {
+                val installedMap =
+                    installedAppsRepository
+                        .getAllInstalledApps()
+                        .first()
+                        .groupBy { it.repoId }
+                val favoritesMap =
+                    favouritesRepository
+                        .getAllFavorites()
+                        .first()
+                        .associateBy { it.repoId }
+                val starredReposMap =
+                    starredRepository
+                        .getAllStarred()
+                        .first()
+                        .associateBy { it.repoId }
 
-                    searchRepository
-                        .searchRepositories(
-                            query = _state.value.query,
-                            platform = _state.value.selectedSearchPlatform.toDomain(),
-                            language = _state.value.selectedLanguage.toDomain(),
-                            sortBy = _state.value.selectedSortBy.toDomain(),
-                            sortOrder = _state.value.selectedSortOrder.toDomain(),
-                            page = currentPage,
-                        ).collect { paginatedRepos ->
-                            currentPage = paginatedRepos.nextPageIndex
+                searchRepository
+                    .searchRepositories(
+                        query = _state.value.query,
+                        platform = _state.value.selectedSearchPlatform,
+                        language = _state.value.selectedLanguage.toDomain(),
+                        sortBy = _state.value.selectedSortBy.toDomain(),
+                        sortOrder = _state.value.selectedSortOrder.toDomain(),
+                        page = currentPage,
+                        source = _state.value.selectedSource.toDomain(),
+                    ).collect { paginatedRepos ->
+                        currentPage = paginatedRepos.nextPageIndex
 
-                            val seenIds = _state.value.seenRepoIds
+                        val seenIds = _state.value.seenRepoIds
+                        val currentLogin = currentUserLogin
 
-                            val newReposWithStatus =
-                                paginatedRepos.repos.map { repo ->
-                                    val app = installedMap[repo.id]
-                                    val favourite = favoritesMap[repo.id]
-                                    val starred = starredReposMap[repo.id]
+                        val newReposWithStatus =
+                            paginatedRepos.repos.map { repo ->
+                                val apps = installedMap[repo.id].orEmpty()
+                                val favourite = favoritesMap[repo.id]
+                                val starred = starredReposMap[repo.id]
 
-                                    DiscoveryRepositoryUi(
-                                        isInstalled = app != null,
-                                        isFavourite = favourite != null,
-                                        isStarred = starred != null,
-                                        isSeen = repo.id in seenIds,
-                                        isUpdateAvailable = app?.isUpdateAvailable ?: false,
-                                        repository = repo.toUi(),
-                                    )
-                                }
-
-                            _state.update { currentState ->
-                                val mergedMap = LinkedHashMap<Long, DiscoveryRepositoryUi>()
-
-                                currentState.repositories.forEach { r ->
-                                    mergedMap[r.repository.id] = r
-                                }
-
-                                newReposWithStatus.forEach { r ->
-                                    val existing = mergedMap[r.repository.id]
-                                    if (existing == null) {
-                                        mergedMap[r.repository.id] = r
-                                    } else {
-                                        mergedMap[r.repository.id] =
-                                            existing.copy(
-                                                isInstalled = r.isInstalled,
-                                                isUpdateAvailable = r.isUpdateAvailable,
-                                                isFavourite = r.isFavourite,
-                                                isStarred = r.isStarred,
-                                                repository = r.repository,
-                                            )
-                                    }
-                                }
-
-                                val allRepos = mergedMap.values.toImmutableList()
-
-                                currentState.copy(
-                                    repositories = allRepos,
-                                    hasMorePages = paginatedRepos.hasMore,
-                                    totalCount = allRepos.size,
-                                    errorMessage = null,
-                                    passthroughAttempted = paginatedRepos.passthroughAttempted,
+                                DiscoveryRepositoryUi(
+                                    isInstalled = apps.any { it.isReallyInstalled() },
+                                    isFavourite = favourite != null,
+                                    isStarred = starred != null,
+                                    isSeen = repo.id in seenIds,
+                                    isCurrentUserOwner =
+                                        currentLogin != null &&
+                                                repo.owner.login.equals(
+                                                    currentLogin,
+                                                    ignoreCase = true
+                                                ),
+                                    isUpdateAvailable = apps.any { it.hasActualUpdate() },
+                                    repository = repo.toUi(),
                                 )
                             }
+
+                        _state.update { currentState ->
+                            val mergedMap = LinkedHashMap<Long, DiscoveryRepositoryUi>()
+
+                            currentState.repositories.forEach { r ->
+                                mergedMap[r.repository.id] = r
+                            }
+
+                            newReposWithStatus.forEach { r ->
+                                val existing = mergedMap[r.repository.id]
+                                if (existing == null) {
+                                    mergedMap[r.repository.id] = r
+                                } else {
+                                    mergedMap[r.repository.id] =
+                                        existing.copy(
+                                            isInstalled = r.isInstalled,
+                                            isUpdateAvailable = r.isUpdateAvailable,
+                                            isFavourite = r.isFavourite,
+                                            isStarred = r.isStarred,
+                                            repository = r.repository,
+                                        )
+                                }
+                            }
+
+                            val allRepos = mergedMap.values.toImmutableList()
+
+                            currentState.copy(
+                                repositories = allRepos,
+                                hasMorePages = paginatedRepos.hasMore,
+                                totalCount = allRepos.size,
+                                errorMessage = null,
+                                passthroughAttempted = paginatedRepos.passthroughAttempted,
+                            )
                         }
-
-                    _state.update {
-                        it.copy(isLoading = false, isLoadingMore = false)
                     }
 
-                    if (isInitial) {
-                        telemetryRepository.recordSearchPerformed(
-                            query = query,
-                            resultCount = _state.value.repositories.size,
-                        )
-                    }
-                } catch (e: RateLimitException) {
-                    logger.debug("Rate limit exceeded: ${e.message}")
-                    _state.update {
-                        it.copy(
-                            isLoading = false,
-                            isLoadingMore = false,
-                            errorMessage = e.message,
-                        )
-                    }
-                } catch (e: CancellationException) {
-                    logger.debug("Search cancelled (expected): ${e.message}")
-                } catch (e: Exception) {
-                    logger.error("Search failed: ${e.message}")
-                    _state.update {
-                        it.copy(
-                            isLoading = false,
-                            isLoadingMore = false,
-                            errorMessage = e.message ?: getString(Res.string.search_failed),
-                        )
-                    }
+                _state.update {
+                    it.copy(isLoading = false, isLoadingMore = false)
+                }
+            } catch (e: RateLimitException) {
+                logger.debug("Rate limit exceeded: ${e.message}")
+                val seconds = e.rateLimitInfo.timeUntilReset().inWholeSeconds
+                val message = if (seconds > 0L) {
+                    getString(Res.string.rate_limit_exceeded_retry_in, seconds.toInt())
+                } else {
+                    getString(Res.string.rate_limit_exceeded)
+                }
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        isLoadingMore = false,
+                        errorMessage = message,
+                    )
+                }
+            } catch (e: CancellationException) {
+                logger.debug("Search cancelled (expected): ${e.message}")
+            } catch (e: Exception) {
+                logger.error("Search failed: ${e.message}")
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        isLoadingMore = false,
+                        errorMessage = e.message ?: getString(Res.string.search_failed),
+                    )
                 }
             }
+        }
     }
 
     fun onAction(action: SearchAction) {
@@ -446,7 +549,15 @@ class SearchViewModel(
                         it.copy(selectedSearchPlatform = action.searchPlatform)
                     }
                     currentPage = 1
-    
+
+                    performSearch(isInitial = true)
+                }
+            }
+
+            is SearchAction.OnSourceSelected -> {
+                if (_state.value.selectedSource != action.source) {
+                    _state.update { it.copy(selectedSource = action.source) }
+                    currentPage = 1
                     performSearch(isInitial = true)
                 }
             }
@@ -457,7 +568,7 @@ class SearchViewModel(
                         it.copy(selectedLanguage = action.language)
                     }
                     currentPage = 1
-    
+
                     performSearch(isInitial = true)
                 }
             }
@@ -502,6 +613,12 @@ class SearchViewModel(
                 }
             }
 
+            SearchAction.OnToggleFiltersSheet -> {
+                _state.update {
+                    it.copy(isFiltersSheetVisible = !it.isFiltersSheetVisible)
+                }
+            }
+
             SearchAction.OnSearchImeClick -> {
                 if (_state.value.detectedLinks.isNotEmpty() && isEntirelyGithubUrls(_state.value.query)) {
                     val link = _state.value.detectedLinks.first()
@@ -521,6 +638,7 @@ class SearchViewModel(
                     runCatching {
                         shareManager.shareText("https://github-store.org/app?repo=${action.repo.fullName}")
                     }.onFailure { t ->
+                        if (t is CancellationException) throw t
                         logger.error("Failed to share link: ${t.message}")
                         _events.send(
                             SearchEvent.OnMessage(getString(Res.string.failed_to_share_link)),
@@ -540,7 +658,7 @@ class SearchViewModel(
                         it.copy(selectedSortBy = action.sortBy)
                     }
                     currentPage = 1
-    
+
                     performSearch(isInitial = true)
                 }
             }
@@ -551,7 +669,7 @@ class SearchViewModel(
                         it.copy(selectedSortOrder = action.sortOrder)
                     }
                     currentPage = 1
-    
+
                     performSearch(isInitial = true)
                 }
             }
@@ -627,6 +745,8 @@ class SearchViewModel(
                                 )
                             }
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         logger.error("Failed to read clipboard: ${e.message}")
                         _events.send(SearchEvent.OnMessage(getString(Res.string.no_github_link_in_clipboard)))
@@ -640,18 +760,11 @@ class SearchViewModel(
                 }
             }
 
-            is SearchAction.OnRepositoryClick -> {
-                telemetryRepository.recordSearchResultClicked(action.repository.id)
-                // Navigation handled in composable
-            }
+            is SearchAction.OnRepositoryClick -> Unit
 
-            SearchAction.OnNavigateBackClick -> {
-                // Handled in composable
-            }
+            SearchAction.OnNavigateBackClick -> Unit
 
-            is SearchAction.OnRepositoryDeveloperClick -> {
-                // Handled in composable
-            }
+            is SearchAction.OnRepositoryDeveloperClick -> Unit
 
             is SearchAction.OnHistoryItemClick -> {
                 _state.update {
@@ -681,6 +794,75 @@ class SearchViewModel(
             SearchAction.ExploreFromGithub -> {
                 performExplore()
             }
+
+            SearchAction.OnDisableHideSeenForResults -> {
+                viewModelScope.launch {
+                    tweaksRepository.setHideSeenEnabled(false)
+                }
+            }
+
+            is SearchAction.OnHideRepository -> {
+                val repo = action.repo
+                viewModelScope.launch {
+                    try {
+                        hiddenReposRepository.hide(
+                            repoId = repo.id,
+                            repoName = repo.name,
+                            repoOwner = repo.owner.login,
+                            repoOwnerAvatarUrl = repo.owner.avatarUrl,
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        logger.warn("Hide repository failed for ${repo.id}: ${e.message}")
+                    }
+                }
+            }
+
+            is SearchAction.OnUndoHideRepository -> {
+                viewModelScope.launch {
+                    try {
+                        hiddenReposRepository.unhide(action.repoId)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        logger.warn("Unhide repository failed for ${action.repoId}: ${e.message}")
+                    }
+                }
+            }
+
+            is SearchAction.OnMarkAsSeen -> {
+                val repo = action.repo
+                viewModelScope.launch {
+                    try {
+                        seenReposRepository.markAsSeen(
+                            repoId = repo.id,
+                            repoName = repo.name,
+                            repoOwner = repo.owner.login,
+                            repoOwnerAvatarUrl = repo.owner.avatarUrl,
+                            repoDescription = repo.description,
+                            primaryLanguage = repo.language,
+                            repoUrl = repo.htmlUrl,
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        logger.warn("Mark as seen failed for ${repo.id}: ${e.message}")
+                    }
+                }
+            }
+
+            is SearchAction.OnMarkAsUnseen -> {
+                viewModelScope.launch {
+                    try {
+                        seenReposRepository.removeFromHistory(action.repoId)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        logger.warn("Mark as unseen failed for ${action.repoId}: ${e.message}")
+                    }
+                }
+            }
         }
     }
 
@@ -691,7 +873,7 @@ class SearchViewModel(
 
         exploreLog.debug(
             "click: query='$query' platform=$platformUi " +
-                "page=$explorePage lastQuery='$lastExploreQuery' status=$prevStatus",
+                    "page=$explorePage lastQuery='$lastExploreQuery' status=$prevStatus",
         )
 
         if (query.isBlank()) {
@@ -717,14 +899,14 @@ class SearchViewModel(
             try {
                 val exploreResult = searchRepository.exploreFromGithub(
                     query = query,
-                    platform = platformUi.toDomain(),
+                    platform = platformUi,
                     page = explorePage,
                 )
                 val existingCount = _state.value.repositories.size
                 exploreLog.debug(
                     "response: items=${exploreResult.repos.size} " +
-                        "returnedPage=${exploreResult.page} hasMore=${exploreResult.hasMore} " +
-                        "existingVisible=$existingCount",
+                            "returnedPage=${exploreResult.page} hasMore=${exploreResult.hasMore} " +
+                            "existingVisible=$existingCount",
                 )
 
                 val before = _state.value.repositories.size
@@ -743,7 +925,7 @@ class SearchViewModel(
                 } else {
                     exploreLog.debug(
                         "-> EXHAUSTED: appended=$added dupes=$dupes " +
-                            "rawItems=${exploreResult.repos.size}",
+                                "rawItems=${exploreResult.repos.size}",
                     )
                     _state.update { it.copy(exploreStatus = SearchState.ExploreStatus.EXHAUSTED) }
                 }
@@ -758,24 +940,30 @@ class SearchViewModel(
     }
 
     private suspend fun appendExploreResults(
-        newRepos: List<zed.rainxch.core.domain.model.GithubRepoSummary>,
+        newRepos: List<GithubRepoSummary>,
     ) {
-        val installedMap = installedAppsRepository.getAllInstalledApps().first().associateBy { it.repoId }
+        val installedMap =
+            installedAppsRepository.getAllInstalledApps().first().groupBy { it.repoId }
         val favoritesMap = favouritesRepository.getAllFavorites().first().associateBy { it.repoId }
         val starredMap = starredRepository.getAllStarred().first().associateBy { it.repoId }
         val seenIds = _state.value.seenRepoIds
+        val currentLogin = currentUserLogin
 
         val existingIds = _state.value.repositories.map { it.repository.id }.toSet()
 
         val deduped = newRepos
             .filter { it.id !in existingIds }
             .map { repo ->
+                val apps = installedMap[repo.id].orEmpty()
                 DiscoveryRepositoryUi(
-                    isInstalled = installedMap[repo.id] != null,
+                    isInstalled = apps.any { it.isReallyInstalled() },
                     isFavourite = favoritesMap[repo.id] != null,
                     isStarred = starredMap[repo.id] != null,
                     isSeen = repo.id in seenIds,
-                    isUpdateAvailable = installedMap[repo.id]?.isUpdateAvailable ?: false,
+                    isCurrentUserOwner =
+                        currentLogin != null &&
+                                repo.owner.login.equals(currentLogin, ignoreCase = true),
+                    isUpdateAvailable = apps.any { it.hasActualUpdate() },
                     repository = repo.toUi(),
                 )
             }

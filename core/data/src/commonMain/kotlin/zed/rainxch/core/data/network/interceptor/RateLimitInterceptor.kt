@@ -4,13 +4,10 @@ import co.touchlab.kermit.Logger
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpClientPlugin
 import io.ktor.client.statement.HttpReceivePipeline
-import io.ktor.client.statement.HttpResponse
-import io.ktor.client.statement.HttpResponsePipeline
 import io.ktor.http.Headers
 import io.ktor.util.AttributeKey
-import zed.rainxch.core.domain.logging.GitHubStoreLogger
-import zed.rainxch.core.domain.model.RateLimitException
-import zed.rainxch.core.domain.model.RateLimitInfo
+import zed.rainxch.core.domain.model.error.RateLimitException
+import zed.rainxch.core.domain.model.error.RateLimitInfo
 import zed.rainxch.core.domain.repository.RateLimitRepository
 
 class RateLimitInterceptor(
@@ -42,9 +39,13 @@ class RateLimitInterceptor(
                 val response = subject
 
                 parseRateLimitFromHeaders(response.headers)?.let { rateLimitInfo ->
-                    plugin.rateLimitRepository.updateRateLimit(rateLimitInfo)
+                    val isErrorResponse = response.status.value == 403 || response.status.value == 429
+                    plugin.rateLimitRepository.updateRateLimit(
+                        rateLimitInfo = rateLimitInfo,
+                        notifyExhausted = isErrorResponse && rateLimitInfo.isExhausted,
+                    )
 
-                    if (response.status.value == 403 && rateLimitInfo.isExhausted) {
+                    if (isErrorResponse && rateLimitInfo.isExhausted) {
                         throw RateLimitException(rateLimitInfo)
                     }
                 }

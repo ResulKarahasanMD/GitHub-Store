@@ -1,11 +1,16 @@
 package zed.rainxch.core.domain.repository
 
 import kotlinx.coroutines.flow.Flow
-import zed.rainxch.core.domain.model.AppTheme
-import zed.rainxch.core.domain.model.DiscoveryPlatform
-import zed.rainxch.core.domain.model.FontTheme
-import zed.rainxch.core.domain.model.InstallerType
-import zed.rainxch.core.domain.model.TranslationProvider
+import zed.rainxch.core.domain.model.announcement.AnnouncementCategory
+import zed.rainxch.core.domain.model.appearance.AccentId
+import zed.rainxch.core.domain.model.appearance.AppPersonality
+import zed.rainxch.core.domain.model.appearance.AppTheme
+import zed.rainxch.core.domain.model.appearance.ContentWidth
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
+import zed.rainxch.core.domain.model.appearance.FontTheme
+import zed.rainxch.core.domain.model.installation.InstallerType
+import zed.rainxch.core.domain.model.appearance.MangaPaperId
+import zed.rainxch.core.domain.model.settings.TranslationProvider
 
 interface TweaksRepository {
     fun getThemeColor(): Flow<AppTheme>
@@ -20,9 +25,21 @@ interface TweaksRepository {
 
     suspend fun setAmoledTheme(enabled: Boolean)
 
+    fun getMangaPaper(): Flow<MangaPaperId>
+
+    suspend fun setMangaPaper(paper: MangaPaperId)
+
     fun getFontTheme(): Flow<FontTheme>
 
     suspend fun setFontTheme(fontTheme: FontTheme)
+
+    fun getPersonality(): Flow<AppPersonality>
+
+    suspend fun setPersonality(personality: AppPersonality)
+
+    fun getAccentId(): Flow<AccentId>
+
+    suspend fun setAccentId(accentId: AccentId)
 
     fun getAutoDetectClipboardLinks(): Flow<Boolean>
 
@@ -32,9 +49,17 @@ interface TweaksRepository {
 
     suspend fun setInstallerType(type: InstallerType)
 
+    fun getInstallerAttribution(): Flow<zed.rainxch.core.domain.model.installation.InstallerAttribution>
+
+    suspend fun setInstallerAttribution(attribution: zed.rainxch.core.domain.model.installation.InstallerAttribution)
+
     fun getAutoUpdateEnabled(): Flow<Boolean>
 
     suspend fun setAutoUpdateEnabled(enabled: Boolean)
+
+    fun getUpdateCheckEnabled(): Flow<Boolean>
+
+    suspend fun setUpdateCheckEnabled(enabled: Boolean)
 
     fun getUpdateCheckInterval(): Flow<Long>
 
@@ -44,25 +69,21 @@ interface TweaksRepository {
 
     suspend fun setIncludePreReleases(enabled: Boolean)
 
-    fun getLiquidGlassEnabled(): Flow<Boolean>
-
-    suspend fun setLiquidGlassEnabled(enabled: Boolean)
-
     fun getHideSeenEnabled(): Flow<Boolean>
 
     suspend fun setHideSeenEnabled(enabled: Boolean)
 
-    fun getDiscoveryPlatform(): Flow<DiscoveryPlatform>
+    fun getDiscoveryPlatforms(): Flow<Set<DiscoveryPlatform>>
 
-    suspend fun setDiscoveryPlatform(platform: DiscoveryPlatform)
+    suspend fun setDiscoveryPlatforms(platforms: Set<DiscoveryPlatform>)
 
     fun getScrollbarEnabled(): Flow<Boolean>
 
     suspend fun setScrollbarEnabled(enabled: Boolean)
 
-    fun getTelemetryEnabled(): Flow<Boolean>
+    fun getContentWidth(): Flow<ContentWidth>
 
-    suspend fun setTelemetryEnabled(enabled: Boolean)
+    suspend fun setContentWidth(width: ContentWidth)
 
     fun getTranslationProvider(): Flow<TranslationProvider>
 
@@ -76,14 +97,105 @@ interface TweaksRepository {
 
     suspend fun setYoudaoAppSecret(appSecret: String)
 
-    /**
-     * Selected UI language as a BCP 47 tag (e.g. `zh-CN`). Emits
-     * `null` when the user hasn't picked one — which means "follow
-     * whatever the JVM/Android locale is" at app start. `null` is
-     * distinct from `""`: the former is the unset state, the latter
-     * would be a malformed user choice we don't support.
-     */
+    fun getLibreTranslateBaseUrl(): Flow<String>
+
+    suspend fun setLibreTranslateBaseUrl(url: String)
+
+    fun getLibreTranslateApiKey(): Flow<String>
+
+    suspend fun setLibreTranslateApiKey(apiKey: String)
+
+    fun getDeeplAuthKey(): Flow<String>
+
+    suspend fun setDeeplAuthKey(authKey: String)
+
+    fun getMicrosoftTranslatorKey(): Flow<String>
+
+    suspend fun setMicrosoftTranslatorKey(key: String)
+
+    fun getMicrosoftTranslatorRegion(): Flow<String>
+
+    suspend fun setMicrosoftTranslatorRegion(region: String)
+
     fun getAppLanguage(): Flow<String?>
 
     suspend fun setAppLanguage(tag: String?)
+
+    fun getAutoTranslateEnabled(): Flow<Boolean>
+
+    suspend fun setAutoTranslateEnabled(enabled: Boolean)
+
+    fun getAutoTranslateTargetLang(): Flow<String?>
+
+    suspend fun setAutoTranslateTargetLang(tag: String?)
+
+    fun getExternalImportEnabled(): Flow<Boolean>
+
+    suspend fun setExternalImportEnabled(enabled: Boolean)
+
+    fun getExternalMatchSearchEnabled(): Flow<Boolean>
+
+    suspend fun setExternalMatchSearchEnabled(enabled: Boolean)
+
+    fun getExternalImportBannerDismissedAtCount(): Flow<Int>
+
+    suspend fun setExternalImportBannerDismissedAtCount(count: Int)
+
+    fun getKaoBannerDismissed(): Flow<Boolean>
+
+    suspend fun setKaoBannerDismissed(dismissed: Boolean)
+
+    fun getApkInspectCoachmarkShown(): Flow<Boolean>
+
+    suspend fun setApkInspectCoachmarkShown(shown: Boolean)
+
+    fun getChannelChipCoachmarkShown(): Flow<Boolean>
+
+    suspend fun setChannelChipCoachmarkShown(shown: Boolean)
+
+    fun getShowAllPlatforms(): Flow<Boolean>
+
+    suspend fun setShowAllPlatforms(enabled: Boolean)
+
+    fun getBatteryOptimizationPromptDismissed(): Flow<Boolean>
+
+    suspend fun setBatteryOptimizationPromptDismissed(dismissed: Boolean)
+
+    fun getLastSeenWhatsNewVersionCode(): Flow<Int?>
+
+    suspend fun setLastSeenWhatsNewVersionCode(versionCode: Int)
+
+    fun getAnnouncementsDismissedIds(): Flow<Set<String>>
+
+    suspend fun addAnnouncementDismissedId(id: String)
+
+    fun getAnnouncementsAcknowledgedIds(): Flow<Set<String>>
+
+    suspend fun addAnnouncementAcknowledgedId(id: String)
+
+    fun getAnnouncementsMutedCategories(): Flow<Set<AnnouncementCategory>>
+
+    suspend fun setAnnouncementCategoryMuted(category: AnnouncementCategory, muted: Boolean)
+
+    fun getAnnouncementsLastFetchedAt(): Flow<Long>
+
+    suspend fun setAnnouncementsLastFetchedAt(epochMillis: Long)
+
+    fun getAppsSortRule(): Flow<String?>
+
+    suspend fun setAppsSortRule(name: String)
+
+    fun getStarredSortRule(): Flow<String?>
+
+    suspend fun setStarredSortRule(name: String)
+
+    fun getFavouritesSortRule(): Flow<String?>
+
+    suspend fun setFavouritesSortRule(name: String)
+
+    fun getCustomForgeHosts(): Flow<Set<String>>
+
+    suspend fun addCustomForgeHost(host: String)
+
+    suspend fun removeCustomForgeHost(host: String)
 }

@@ -8,11 +8,12 @@ data class AuthenticationState(
     val info: String? = null,
     val isPolling: Boolean = false,
     val pollIntervalSec: Int = 0,
-    // PAT ("Personal Access Token") paste flow — alternate login path
-    // for users on networks where the browser can't reach github.com
-    // to complete the device-flow authorize step.
+
     val isPatSheetVisible: Boolean = false,
     val patInput: String = "",
     val patError: String? = null,
     val isPatSubmitting: Boolean = false,
+
+    val isAdvancedAuthVisible: Boolean = false,
+    val isWebAuthInFlight: Boolean = false,
 )

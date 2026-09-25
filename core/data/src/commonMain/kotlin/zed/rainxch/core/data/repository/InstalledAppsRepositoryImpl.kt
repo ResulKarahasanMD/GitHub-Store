@@ -21,15 +21,17 @@ import zed.rainxch.core.data.mappers.toDomain
 import zed.rainxch.core.data.mappers.toEntity
 import zed.rainxch.core.data.network.GitHubClientProvider
 import zed.rainxch.core.data.network.executeRequest
-import zed.rainxch.core.domain.model.GithubAsset
-import zed.rainxch.core.domain.model.GithubRelease
-import zed.rainxch.core.domain.model.InstallSource
-import zed.rainxch.core.domain.model.InstalledApp
+import zed.rainxch.core.domain.model.account.github.GithubAsset
+import zed.rainxch.core.domain.model.account.github.GithubRelease
+import zed.rainxch.core.domain.model.installation.InstallSource
+import zed.rainxch.core.domain.model.installation.InstalledApp
+import zed.rainxch.core.domain.model.smart_detect.MatchingPreview
 import zed.rainxch.core.domain.repository.InstalledAppsRepository
-import zed.rainxch.core.domain.repository.MatchingPreview
 import zed.rainxch.core.domain.system.Installer
-import zed.rainxch.core.domain.util.AssetFilter
-import zed.rainxch.core.domain.util.AssetVariant
+import zed.rainxch.core.domain.model.account.github.isEffectivelyPreRelease
+import zed.rainxch.core.domain.utils.AssetFilter
+import zed.rainxch.core.domain.utils.AssetVariant
+import zed.rainxch.core.domain.utils.VersionMath
 
 class InstalledAppsRepositoryImpl(
     private val database: AppDatabase,
@@ -37,26 +39,14 @@ class InstalledAppsRepositoryImpl(
     private val historyDao: UpdateHistoryDao,
     private val installer: Installer,
     private val clientProvider: GitHubClientProvider,
+    private val backendApiClient: zed.rainxch.core.data.network.BackendApiClient,
+    private val forgejoClientRegistry: zed.rainxch.core.data.network.ForgejoClientRegistry,
 ) : InstalledAppsRepository {
-    // Reads the current Ktor client at every call site so any proxy
-    // change (ProxyManager rebuilds the client via [clientProvider])
-    // is picked up immediately on the next request without requiring
-    // the repository itself to be reconstructed.
+
     private val httpClient: HttpClient get() = clientProvider.client
 
     private companion object {
-        /**
-         * How many releases the update checker fetches in one request.
-         * Picked to balance:
-         *  - Monorepos that ship multiple sibling apps in close succession
-         *    (need a few releases of headroom to find a match for the
-         *    targeted app via [InstalledApp.fallbackToOlderReleases])
-         *  - Avoiding unnecessary GitHub API quota burn for the common case
-         *    of a single-app repo where 1 release is enough.
-         *
-         * 50 is the GitHub API per_page maximum that doesn't require
-         * pagination, and is enough to cover ~3 months of daily releases.
-         */
+
         const val RELEASE_WINDOW = 50
     }
 
@@ -84,12 +74,20 @@ class InstalledAppsRepositoryImpl(
             .getAppByPackage(packageName)
             ?.toDomain()
 
-    override suspend fun getAppByRepoId(repoId: Long): InstalledApp? = installedAppsDao.getAppByRepoId(repoId)?.toDomain()
+    override suspend fun getAppByRepoId(repoId: Long): InstalledApp? =
+        installedAppsDao.getAppByRepoId(repoId)?.toDomain()
 
     override fun getAppByRepoIdAsFlow(repoId: Long): Flow<InstalledApp?> =
         installedAppsDao.getAppByRepoIdAsFlow(repoId).map { it?.toDomain() }
 
-    override suspend fun isAppInstalled(repoId: Long): Boolean = installedAppsDao.getAppByRepoId(repoId) != null
+    override suspend fun getAppsByRepoId(repoId: Long): List<InstalledApp> =
+        installedAppsDao.getAppsByRepoId(repoId).map { it.toDomain() }
+
+    override fun getAppsByRepoIdAsFlow(repoId: Long): Flow<List<InstalledApp>> =
+        installedAppsDao.getAppsByRepoIdAsFlow(repoId).map { list -> list.map { it.toDomain() } }
+
+    override suspend fun isAppInstalled(repoId: Long): Boolean =
+        installedAppsDao.getAppByRepoId(repoId) != null
 
     override suspend fun saveInstalledApp(app: InstalledApp) {
         installedAppsDao.insertApp(app.toEntity())
@@ -99,16 +97,35 @@ class InstalledAppsRepositoryImpl(
         installedAppsDao.deleteByPackageName(packageName)
     }
 
-    /**
-     * Fetches up to [RELEASE_WINDOW] releases for [owner]/[repo], filters
-     * out drafts, applies the pre-release flag, and returns them sorted by
-     * `publishedAt` descending. Empty list on failure (logged at error).
-     */
     private suspend fun fetchReleaseWindow(
         owner: String,
         repo: String,
         includePreReleases: Boolean,
+        sourceHost: String? = null,
     ): List<GithubRelease> {
+        if (sourceHost != null) {
+            return fetchForgejoReleaseWindow(sourceHost, owner, repo, includePreReleases)
+        }
+        val backendResult = backendApiClient.getReleases(owner, repo, perPage = RELEASE_WINDOW)
+        val backendReleases = backendResult.fold(
+            onSuccess = { it },
+            onFailure = { error ->
+                if (!zed.rainxch.core.data.network.shouldFallbackToGithubOrRethrow(error)) {
+                    return emptyList()
+                }
+                null
+            },
+        )
+        if (backendReleases != null) {
+            return backendReleases
+                .asSequence()
+                .filter { it.draft != true }
+                .sortedByDescending { it.publishedAt ?: it.createdAt ?: "" }
+                .map { it.toDomain() }
+                .filter { includePreReleases || !it.isEffectivelyPreRelease() }
+                .toList()
+        }
+
         return try {
             val releases =
                 httpClient
@@ -122,13 +139,24 @@ class InstalledAppsRepositoryImpl(
             releases
                 .asSequence()
                 .filter { it.draft != true }
-                .filter { includePreReleases || it.prerelease != true }
                 .sortedByDescending { it.publishedAt ?: it.createdAt ?: "" }
                 .map { it.toDomain() }
+                .onEach { release ->
+                    val flagSays = release.isPrerelease
+                    val tagSays = VersionMath.isPreReleaseTag(release.tagName)
+                    if (flagSays != tagSays) {
+                        Logger.w {
+                            "Pre-release flag/tag mismatch for $owner/$repo " +
+                                    "release '${release.tagName}' (name='${release.name}'): " +
+                                    "apiFlag=$flagSays, tagMarker=$tagSays — " +
+                                    "treating as pre-release=${true}"
+                        }
+                    }
+                }
+                .filter { includePreReleases || !it.isEffectivelyPreRelease() }
                 .toList()
         } catch (e: CancellationException) {
-            // Structured concurrency: cancellation must propagate. Never
-            // silently convert a cancelled fetch into an empty result.
+
             throw e
         } catch (e: Exception) {
             Logger.e { "Failed to fetch releases for $owner/$repo: ${e.message}" }
@@ -136,51 +164,12 @@ class InstalledAppsRepositoryImpl(
         }
     }
 
-    /**
-     * Result of [resolveTrackedRelease] — a candidate release plus the asset
-     * the installer should download for it. `null` when no release in the
-     * window contains a usable asset (after filter + arch matching).
-     *
-     * [variantWasLost] is true when the user has a [InstalledApp.preferredAssetVariant]
-     * set but none of this release's assets matched it. The caller flips
-     * `preferredVariantStale` based on this so the UI can prompt the user
-     * to pick a new variant.
-     */
     private data class ResolvedRelease(
         val release: GithubRelease,
         val primaryAsset: GithubAsset,
         val variantWasLost: Boolean,
     )
 
-    /**
-     * Walks [releases] (already in newest-first order) and returns the first
-     * release whose installable asset list — after applying [filter] — yields
-     * a usable asset. The picker tries, in order:
-     *
-     *   1. **Token-set match** — pinned token fingerprint equals the asset's
-     *   2. **Glob match** — pinned glob pattern equals the asset's
-     *   3. **Tail-string match** — legacy substring-tail equality
-     *   4. **Same-position fallback** — same index, same total count of
-     *      installable assets as when the user originally pinned
-     *   5. **Platform auto-pick** — architecture-aware default
-     *
-     * Layers 1–3 are wrapped behind [AssetVariant.resolvePreferredAsset].
-     * Layer 4 is consulted only when 1–3 all miss but the new release
-     * has exactly the same number of installable assets as the picked
-     * release. Layer 5 keeps updates flowing even when the variant is
-     * completely lost — the caller flips `variantWasLost` so the UI
-     * can surface the discrepancy.
-     *
-     * When [filter] is null, only the first release in the window is
-     * considered: this preserves the pre-existing behaviour for apps that
-     * don't track a monorepo.
-     *
-     * When [filter] is non-null and [fallbackToOlderReleases] is false, the
-     * walker still only inspects the first release. The semantics are:
-     *   "Apply the filter to the latest release, but don't dig further."
-     * This matches Obtainium's defaults and avoids accidental downgrades for
-     * apps where the user just wants a stricter asset picker.
-     */
     private fun resolveTrackedRelease(
         releases: List<GithubRelease>,
         filter: AssetFilter?,
@@ -190,24 +179,22 @@ class InstalledAppsRepositoryImpl(
         preferredGlob: String?,
         pickedIndex: Int?,
         pickedSiblingCount: Int?,
+        trackedPackageName: String,
+        installedAssetName: String?,
     ): ResolvedRelease? {
         if (releases.isEmpty()) return null
 
         val candidates =
-            if (filter != null && fallbackToOlderReleases) {
-                releases
-            } else {
+            if (filter != null && !fallbackToOlderReleases) {
                 releases.take(1)
+            } else {
+                releases
             }
 
-        // "Has any pin" tracks whether the user has *something* stored
-        // for variant identity — used to decide whether the
-        // `variantWasLost` flag should flip on. Without this, an app
-        // that's never been pinned would always look "lost".
         val hasAnyPin =
             preferredVariant != null ||
-                preferredTokens.isNotEmpty() ||
-                !preferredGlob.isNullOrBlank()
+                    preferredTokens.isNotEmpty() ||
+                    !preferredGlob.isNullOrBlank()
 
         for (release in candidates) {
             val installableForPlatform =
@@ -218,7 +205,6 @@ class InstalledAppsRepositoryImpl(
 
             if (installableForApp.isEmpty()) continue
 
-            // Layers 1–3: token set, glob, then legacy tail string.
             val fingerprintMatch =
                 AssetVariant.resolvePreferredAsset(
                     assets = installableForApp,
@@ -227,9 +213,6 @@ class InstalledAppsRepositoryImpl(
                     pinnedGlob = preferredGlob,
                 )
 
-            // Layer 4: same-position fallback. Only consulted when no
-            // fingerprint matched and the user actually pinned
-            // *something* (otherwise the index is meaningless).
             val positionMatch =
                 if (fingerprintMatch == null && hasAnyPin) {
                     AssetVariant.resolveBySamePosition(
@@ -241,18 +224,30 @@ class InstalledAppsRepositoryImpl(
                     null
                 }
 
-            // Layer 5: platform auto-pick (last resort, never null
-            // unless the platform installer can't pick anything).
+            val installedStem =
+                installedAssetName
+                    ?.let { AssetVariant.extractBaseStem(it) }
+                    ?.takeIf { it.isNotEmpty() }
+            val autoPickPool =
+                AssetVariant
+                    .filterByPackageFlavor(installableForApp, trackedPackageName)
+                    .let { pool ->
+                        if (installedStem == null) {
+                            pool
+                        } else {
+                            val matching =
+                                pool.filter {
+                                    AssetVariant.extractBaseStem(it.name) == installedStem
+                                }
+
+                            matching.ifEmpty { pool }
+                        }
+                    }
             val primary = fingerprintMatch
                 ?: positionMatch
-                ?: installer.choosePrimaryAsset(installableForApp)
+                ?: installer.choosePrimaryAsset(autoPickPool)
                 ?: continue
 
-            // The variant is "lost" when the user had a pin but neither
-            // a fingerprint nor a same-position match recovered it.
-            // Same-position rescues silently (it's a confidence-trick
-            // — the user can't tell anything went wrong) so we don't
-            // flag it as lost; otherwise the UI would nag every check.
             val variantWasLost =
                 hasAnyPin && fingerprintMatch == null && positionMatch == null
 
@@ -265,76 +260,105 @@ class InstalledAppsRepositoryImpl(
     override suspend fun checkForUpdates(packageName: String): Boolean {
         val app = installedAppsDao.getAppByPackage(packageName) ?: return false
 
+        if (!app.updateCheckEnabled) {
+            return false
+        }
+
         try {
             val releases =
                 fetchReleaseWindow(
                     owner = app.repoOwner,
                     repo = app.repoName,
                     includePreReleases = app.includePreReleases,
+                    sourceHost = app.sourceHost,
                 )
 
             if (releases.isEmpty()) {
-                // The repo has no visible releases (or the fetch failed
-                // softly). Drop any stale update metadata so the badge
-                // doesn't outlive the release that set it.
+
                 installedAppsDao.clearUpdateMetadata(packageName, System.currentTimeMillis())
                 return false
             }
 
-            // Compile the per-app filter once. Invalid regexes are treated as
-            // "no filter" so we don't break the app silently — the user is
-            // told about the syntax error in the advanced settings sheet.
             val compiledFilter =
                 AssetFilter.parse(app.assetFilterRegex)
                     ?.onFailure { error ->
                         Logger.w {
                             "Invalid asset filter for $packageName " +
-                                "(${app.assetFilterRegex}): ${error.message} — ignoring"
+                                    "(${app.assetFilterRegex}): ${error.message} — ignoring"
                         }
                     }?.getOrNull()
 
-            val resolved =
-                resolveTrackedRelease(
-                    releases = releases,
-                    filter = compiledFilter,
-                    fallbackToOlderReleases = app.fallbackToOlderReleases,
-                    preferredVariant = app.preferredAssetVariant,
-                    preferredTokens = AssetVariant.deserializeTokens(app.preferredAssetTokens),
-                    preferredGlob = app.assetGlobPattern,
-                    pickedIndex = app.pickedAssetIndex,
-                    pickedSiblingCount = app.pickedAssetSiblingCount,
-                )
+            val resolved = resolveTrackedRelease(
+                releases = releases,
+                filter = compiledFilter,
+                fallbackToOlderReleases = app.fallbackToOlderReleases,
+                preferredVariant = app.preferredAssetVariant,
+                preferredTokens = AssetVariant.deserializeTokens(app.preferredAssetTokens),
+                preferredGlob = app.assetGlobPattern,
+                pickedIndex = app.pickedAssetIndex,
+                pickedSiblingCount = app.pickedAssetSiblingCount,
+                trackedPackageName = app.packageName,
+                installedAssetName = app.installedAssetName,
+            )
 
             if (resolved == null) {
                 Logger.d {
                     "No matching release found for ${app.appName} in window of ${releases.size}; " +
-                        "filter=${app.assetFilterRegex}, fallback=${app.fallbackToOlderReleases}"
+                            "filter=${app.assetFilterRegex}, fallback=${app.fallbackToOlderReleases}"
                 }
-                // Filter matches nothing in the fetched window — clear
-                // any cached latest-release metadata so the UI doesn't
-                // keep pointing at an asset that no longer matches.
+
                 installedAppsDao.clearUpdateMetadata(packageName, System.currentTimeMillis())
                 return false
             }
 
             val (matchedRelease, primaryAsset, variantWasLost) = resolved
-            val normalizedInstalledTag = normalizeVersion(app.installedVersion)
-            val normalizedLatestTag = normalizeVersion(matchedRelease.tagName)
 
+            val installedCode = app.installedVersionCode
+            val latestCode = app.latestVersionCode
+            val codesAlreadyMatch =
+                installedCode > 0L &&
+                        latestCode != null &&
+                        latestCode > 0L &&
+                        installedCode == latestCode &&
+                        matchedRelease.tagName == app.latestVersion
+
+            val skippedTag = app.skippedReleaseTag
+            val matchesSkipped =
+                skippedTag != null &&
+                        VersionMath.isExactSameVersion(matchedRelease.tagName, skippedTag)
+            val skipBecameStale =
+                skippedTag != null &&
+                        !matchesSkipped &&
+                        VersionMath.isVersionNewer(matchedRelease.tagName, skippedTag)
+            if (skipBecameStale) {
+                installedAppsDao.setSkippedReleaseTag(packageName, null)
+            }
+
+            val reconcilable =
+                VersionMath.versionsReconcilable(app.installedVersion, matchedRelease.tagName)
             val isUpdateAvailable =
-                if (normalizedInstalledTag == normalizedLatestTag) {
-                    false
-                } else {
-                    isVersionNewer(normalizedLatestTag, normalizedInstalledTag)
+                when {
+                    codesAlreadyMatch -> false
+                    matchesSkipped -> false
+                    !reconcilable -> false
+                    else ->
+                        VersionMath.isVersionNewer(
+                            candidate = matchedRelease.tagName,
+                            current = app.installedVersion,
+                        )
                 }
 
             Logger.d {
                 "Update check for ${app.appName}: " +
-                    "installedTag=${app.installedVersion}, " +
-                    "matchedTag=${matchedRelease.tagName}, " +
-                    "matchedAsset=${primaryAsset.name}, " +
-                    "isUpdate=$isUpdateAvailable, variantLost=$variantWasLost"
+                        "installedTag=${app.installedVersion}, " +
+                        "matchedTag=${matchedRelease.tagName}, " +
+                        "matchedAsset=${primaryAsset.name}, " +
+                        "codesMatch=$codesAlreadyMatch, " +
+                        "isUpdate=$isUpdateAvailable, variantLost=$variantWasLost"
             }
+
+            val resolvedLatestVersionCode =
+                if (matchedRelease.tagName == app.latestVersion) app.latestVersionCode else null
 
             installedAppsDao.updateVersionInfo(
                 packageName = packageName,
@@ -346,19 +370,29 @@ class InstalledAppsRepositoryImpl(
                 releaseNotes = matchedRelease.description ?: "",
                 timestamp = System.currentTimeMillis(),
                 latestVersionName = matchedRelease.tagName,
-                latestVersionCode = null,
+                latestVersionCode = resolvedLatestVersionCode,
                 latestReleasePublishedAt = matchedRelease.publishedAt,
             )
 
-            // Sync the staleness flag with what the resolver actually
-            // observed: flip on when the user's pinned variant has
-            // disappeared from the latest matching release, flip off
-            // (and only when previously set) when it's back in business.
+            if ((codesAlreadyMatch || !reconcilable) &&
+                app.installedVersion != matchedRelease.tagName
+            ) {
+                installedAppsDao.updateInstalledVersion(
+                    packageName = packageName,
+                    installedVersion = matchedRelease.tagName,
+                    installedVersionName = app.installedVersionName,
+                    installedVersionCode = installedCode,
+                    isUpdateAvailable = false,
+                )
+            }
+
             if (variantWasLost != app.preferredVariantStale) {
                 installedAppsDao.updateVariantStaleness(packageName, variantWasLost)
             }
 
             return isUpdateAvailable
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Logger.e { "Failed to check updates for $packageName: ${e.message}" }
             installedAppsDao.updateLastChecked(packageName, System.currentTimeMillis())
@@ -373,6 +407,8 @@ class InstalledAppsRepositoryImpl(
             if (app.updateCheckEnabled) {
                 try {
                     checkForUpdates(app.packageName)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Logger.w { "Failed to check updates for ${app.packageName}: ${e.message}" }
                 }
@@ -410,6 +446,11 @@ class InstalledAppsRepositoryImpl(
             ),
         )
 
+        val snapshotLatestVersion = app.latestVersion
+        val isUpdateStillAvailable =
+            !snapshotLatestVersion.isNullOrBlank() &&
+                    VersionMath.isVersionNewer(snapshotLatestVersion, newTag)
+
         installedAppsDao.updateApp(
             app.copy(
                 installedVersion = newTag,
@@ -417,22 +458,41 @@ class InstalledAppsRepositoryImpl(
                 installedAssetUrl = newAssetUrl,
                 installedVersionName = newVersionName,
                 installedVersionCode = newVersionCode,
-                latestVersion = newTag,
-                latestAssetName = newAssetName,
-                latestAssetUrl = newAssetUrl,
-                latestVersionName = newVersionName,
-                latestVersionCode = newVersionCode,
-                isUpdateAvailable = false,
+                isUpdateAvailable = isUpdateStillAvailable,
+                latestVersionCode = if (isUpdateStillAvailable) app.latestVersionCode else newVersionCode,
                 isPendingInstall = isPendingInstall,
                 lastUpdatedAt = System.currentTimeMillis(),
                 lastCheckedAt = System.currentTimeMillis(),
                 signingFingerprint = signingFingerprint,
+
+                pendingInstallFilePath =
+                    if (isPendingInstall) app.pendingInstallFilePath else null,
+                pendingInstallVersion =
+                    if (isPendingInstall) app.pendingInstallVersion else null,
+                pendingInstallAssetName =
+                    if (isPendingInstall) app.pendingInstallAssetName else null,
             ),
         )
     }
 
     override suspend fun updateApp(app: InstalledApp) {
         installedAppsDao.updateApp(app.toEntity())
+    }
+
+    override suspend fun updateInstalledVersion(
+        packageName: String,
+        installedVersion: String,
+        installedVersionName: String?,
+        installedVersionCode: Long,
+        isUpdateAvailable: Boolean,
+    ) {
+        installedAppsDao.updateInstalledVersion(
+            packageName = packageName,
+            installedVersion = installedVersion,
+            installedVersionName = installedVersionName,
+            installedVersionCode = installedVersionCode,
+            isUpdateAvailable = isUpdateAvailable,
+        )
     }
 
     override suspend fun updatePendingStatus(
@@ -450,6 +510,26 @@ class InstalledAppsRepositoryImpl(
         installedAppsDao.updateIncludePreReleases(packageName, enabled)
     }
 
+    override suspend fun setUpdateCheckEnabled(
+        packageName: String,
+        enabled: Boolean,
+    ) {
+        installedAppsDao.updateUpdateCheckEnabled(packageName, enabled)
+        if (enabled) {
+            try {
+                checkForUpdates(packageName)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Logger.w {
+                    "Failed to re-check after enabling update check for $packageName: ${e.message}"
+                }
+            }
+        } else {
+            installedAppsDao.clearUpdateMetadata(packageName, System.currentTimeMillis())
+        }
+    }
+
     override suspend fun setAssetFilter(
         packageName: String,
         regex: String?,
@@ -462,9 +542,6 @@ class InstalledAppsRepositoryImpl(
             fallback = fallbackToOlderReleases,
         )
 
-        // Persisting is the authoritative operation — if the follow-up
-        // re-check fails (network down, rate limited, cancelled) we still
-        // keep the new filter. The next periodic worker run will catch up.
         try {
             checkForUpdates(packageName)
         } catch (e: CancellationException) {
@@ -472,7 +549,7 @@ class InstalledAppsRepositoryImpl(
         } catch (e: Exception) {
             Logger.w {
                 "Saved new asset filter for $packageName but immediate " +
-                    "re-check failed: ${e.message}"
+                        "re-check failed: ${e.message}"
             }
         }
     }
@@ -497,9 +574,6 @@ class InstalledAppsRepositoryImpl(
             siblingCount = siblingCount?.takeIf { it > 0 },
         )
 
-        // Re-run the update check so cached `latestAsset*` columns point
-        // at the variant the user just chose. Failures here are
-        // non-fatal: persistence is the authoritative step.
         try {
             checkForUpdates(packageName)
         } catch (e: CancellationException) {
@@ -507,7 +581,7 @@ class InstalledAppsRepositoryImpl(
         } catch (e: Exception) {
             Logger.w {
                 "Saved new variant for $packageName but immediate " +
-                    "re-check failed: ${e.message}"
+                        "re-check failed: ${e.message}"
             }
         }
     }
@@ -522,6 +596,18 @@ class InstalledAppsRepositoryImpl(
             siblingCount = null,
         )
     }
+
+    override suspend fun setSkippedReleaseTag(
+        packageName: String,
+        tag: String?,
+    ) {
+        installedAppsDao.setSkippedReleaseTag(packageName, tag?.takeIf { it.isNotBlank() })
+    }
+
+    override fun getAppsWithSkippedReleaseTag(): Flow<List<InstalledApp>> =
+        installedAppsDao
+            .getAppsWithSkippedReleaseTag()
+            .map { it.map { entity -> entity.toDomain() } }
 
     override suspend fun setPendingInstallFilePath(
         packageName: String,
@@ -560,10 +646,10 @@ class InstalledAppsRepositoryImpl(
         }
 
         val candidates =
-            if (filter != null && fallbackToOlderReleases) {
-                releases
-            } else {
+            if (filter != null && !fallbackToOlderReleases) {
                 releases.take(1)
+            } else {
+                releases
             }
 
         for (release in candidates) {
@@ -583,153 +669,28 @@ class InstalledAppsRepositoryImpl(
         )
     }
 
-    /**
-     * Reduces a tag or installed-version string to a form that
-     * [parseSemanticVersion] can actually digest.
-     *
-     * Why this matters: when a user sideloads an update from outside
-     * GitHub Store, [SyncInstalledAppsUseCase] picks up the new
-     * `versionName` from the Android package manager and writes it back
-     * to `installedVersion`. But the immediately-following
-     * [checkForUpdates] then compares that fresh value against the
-     * GitHub release `tagName`. If the maintainer publishes tags like
-     * `release-1.2.0` or `App-1.2.0` (any prefix that isn't just `v`),
-     * the OLD normalize-by-stripping-v left them alone, the equality
-     * check failed, and [isVersionNewer] fell through to a lexicographic
-     * comparison where the leading letter (`'r'` = 114) is "greater
-     * than" the digit (`'1'` = 49), incorrectly re-flagging the update.
-     *
-     * The new normalization tries, in order:
-     *   1. Strip leading `v` / `V`
-     *   2. Drop `+build` metadata (semver says it's ignored for ordering)
-     *   3. If the result is still not parseable, extract the first
-     *      dotted-digit substring (optionally followed by a `-pre`
-     *      identifier) and use that.
-     *
-     * Examples:
-     *   `v1.2.3`               → `1.2.3`
-     *   `1.2.3+sha.abcd`       → `1.2.3`
-     *   `1.2.3-rc1`            → `1.2.3-rc1`        (preserved — affects ordering)
-     *   `release-1.2.0`        → `1.2.0`
-     *   `App-v1.2.0-stable`    → `1.2.0-stable`
-     *   `build-2025.04.10`     → `2025.04.10`
-     *   `not-a-version`        → `not-a-version`    (unchanged — let caller fall back)
-     */
-    private fun normalizeVersion(version: String): String {
-        val cleaned = version.trim().removePrefix("v").removePrefix("V").trim()
-        val withoutBuildMetadata = cleaned.substringBefore('+')
-        if (parseSemanticVersion(withoutBuildMetadata) != null) {
-            return withoutBuildMetadata
+    private suspend fun fetchForgejoReleaseWindow(
+        host: String,
+        owner: String,
+        repo: String,
+        includePreReleases: Boolean,
+    ): List<GithubRelease> {
+        val client = forgejoClientRegistry.clientFor(host)
+        return try {
+            val releases = client.getReleases(owner, repo, perPage = RELEASE_WINDOW).getOrNull()
+                ?: return emptyList()
+            releases
+                .asSequence()
+                .filter { it.draft != true }
+                .sortedByDescending { it.publishedAt ?: it.createdAt ?: "" }
+                .map { it.toDomain() }
+                .filter { includePreReleases || !it.isEffectivelyPreRelease() }
+                .toList()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.e { "Forgejo fetch failed for $host/$owner/$repo: ${e.message}" }
+            emptyList()
         }
-        val match =
-            Regex("""\d+(?:\.\d+)*(?:-[\w.]+)?""")
-                .find(withoutBuildMetadata)
-        return match?.value ?: withoutBuildMetadata
-    }
-
-    /**
-     * Compare two version strings and return true if [candidate] is newer than [current].
-     * Handles semantic versioning (1.2.3), pre-release suffixes (1.2.3-beta.1),
-     * and falls back to lexicographic comparison for non-standard formats.
-     *
-     * Pre-release versions are considered older than their stable counterparts:
-     *   1.2.3-beta < 1.2.3  (per semver spec)
-     *
-     * This prevents false "downgrade" notifications when a user has a pre-release
-     * installed and the latest stable version has a lower or equal base version.
-     */
-    private fun isVersionNewer(
-        candidate: String,
-        current: String,
-    ): Boolean {
-        val candidateParsed = parseSemanticVersion(candidate)
-        val currentParsed = parseSemanticVersion(current)
-
-        if (candidateParsed != null && currentParsed != null) {
-            // Compare major.minor.patch
-            for (i in 0 until maxOf(candidateParsed.numbers.size, currentParsed.numbers.size)) {
-                val c = candidateParsed.numbers.getOrElse(i) { 0 }
-                val r = currentParsed.numbers.getOrElse(i) { 0 }
-                if (c > r) return true
-                if (c < r) return false
-            }
-            // Numbers are equal; compare pre-release suffixes
-            // No pre-release > has pre-release (e.g., 1.0.0 > 1.0.0-beta)
-            return when {
-                candidateParsed.preRelease == null && currentParsed.preRelease != null -> {
-                    true
-                }
-
-                candidateParsed.preRelease != null && currentParsed.preRelease == null -> {
-                    false
-                }
-
-                candidateParsed.preRelease != null && currentParsed.preRelease != null -> {
-                    comparePreRelease(candidateParsed.preRelease, currentParsed.preRelease) > 0
-                }
-
-                else -> {
-                    false
-                } // both null, versions are equal
-            }
-        }
-
-        // Fallback: lexicographic comparison (better than just "not equal")
-        return candidate > current
-    }
-
-    private data class SemanticVersion(
-        val numbers: List<Int>,
-        val preRelease: String?,
-    )
-
-    private fun parseSemanticVersion(version: String): SemanticVersion? {
-        // Split off pre-release suffix: "1.2.3-beta.1" -> "1.2.3" and "beta.1"
-        val hyphenIndex = version.indexOf('-')
-        val numberPart = if (hyphenIndex >= 0) version.substring(0, hyphenIndex) else version
-        val preRelease = if (hyphenIndex >= 0) version.substring(hyphenIndex + 1) else null
-
-        val parts = numberPart.split(".")
-        val numbers = parts.mapNotNull { it.toIntOrNull() }
-
-        // Only valid if we could parse at least one number and all parts were valid numbers
-        if (numbers.isEmpty() || numbers.size != parts.size) return null
-
-        return SemanticVersion(numbers, preRelease)
-    }
-
-    /**
-     * Compare pre-release identifiers per semver spec:
-     * Identifiers consisting of only digits are compared numerically.
-     * Identifiers with letters are compared lexically.
-     * Numeric identifiers always have lower precedence than alphanumeric.
-     * A larger set of pre-release fields has higher precedence if all preceding are equal.
-     */
-    private fun comparePreRelease(
-        a: String,
-        b: String,
-    ): Int {
-        val aParts = a.split(".")
-        val bParts = b.split(".")
-
-        for (i in 0 until minOf(aParts.size, bParts.size)) {
-            val aNum = aParts[i].toIntOrNull()
-            val bNum = bParts[i].toIntOrNull()
-
-            val cmp =
-                when {
-                    aNum != null && bNum != null -> aNum.compareTo(bNum)
-
-                    aNum != null -> -1
-
-                    // numeric < alphanumeric
-                    bNum != null -> 1
-
-                    else -> aParts[i].compareTo(bParts[i])
-                }
-            if (cmp != 0) return cmp
-        }
-
-        return aParts.size.compareTo(bParts.size)
     }
 }

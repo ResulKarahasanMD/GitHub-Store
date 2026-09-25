@@ -2,14 +2,14 @@ package zed.rainxch.home.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -17,69 +17,330 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.getString
-import zed.rainxch.core.domain.logging.GitHubStoreLogger
-import zed.rainxch.core.domain.model.DiscoveryPlatform
-import zed.rainxch.core.domain.model.Platform
+import zed.rainxch.core.domain.getPlatform
+import zed.rainxch.core.domain.isDesktop
+import zed.rainxch.core.domain.logging.KomiStoreLogger
+import zed.rainxch.core.domain.model.account.github.GithubRepoSummary
+import zed.rainxch.core.domain.model.installation.InstalledApp
+import zed.rainxch.core.domain.model.installation.hasActualUpdate
+import zed.rainxch.core.domain.model.installation.isReallyInstalled
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
+import zed.rainxch.core.domain.model.repository.PaginatedDiscoveryRepositories
+import zed.rainxch.core.domain.model.system.Platform
+import zed.rainxch.core.domain.repository.BrowseFilterStore
 import zed.rainxch.core.domain.repository.FavouritesRepository
+import zed.rainxch.core.domain.repository.HiddenReposRepository
 import zed.rainxch.core.domain.repository.InstalledAppsRepository
 import zed.rainxch.core.domain.repository.SeenReposRepository
 import zed.rainxch.core.domain.repository.StarredRepository
 import zed.rainxch.core.domain.repository.TweaksRepository
+import zed.rainxch.core.domain.repository.UserSessionRepository
 import zed.rainxch.core.domain.use_cases.SyncInstalledAppsUseCase
-import zed.rainxch.core.domain.utils.ShareManager
-import zed.rainxch.core.presentation.model.DiscoveryRepositoryUi
-import zed.rainxch.core.presentation.utils.toUi
-import zed.rainxch.githubstore.core.presentation.res.*
-import zed.rainxch.home.domain.model.HomeCategory
-import zed.rainxch.home.domain.model.TopicCategory
+import zed.rainxch.core.domain.helpers.ShareManager
+import zed.rainxch.githubstore.core.presentation.res.Res
+import zed.rainxch.githubstore.core.presentation.res.failed_to_share_link
+import zed.rainxch.githubstore.core.presentation.res.home_failed_to_load_repositories
+import zed.rainxch.githubstore.core.presentation.res.link_copied_to_clipboard
 import zed.rainxch.home.domain.repository.HomeRepository
-import zed.rainxch.home.presentation.HomeEvent.*
+import zed.rainxch.home.presentation.model.ChartTab
+import zed.rainxch.home.presentation.model.HomeRepoCardUi
+import zed.rainxch.home.presentation.model.toHomeRepoCardUi
 
 class HomeViewModel(
     private val homeRepository: HomeRepository,
     private val installedAppsRepository: InstalledAppsRepository,
-    private val platform: Platform,
     private val syncInstalledAppsUseCase: SyncInstalledAppsUseCase,
     private val favouritesRepository: FavouritesRepository,
     private val starredRepository: StarredRepository,
-    private val logger: GitHubStoreLogger,
-    private val shareManager: ShareManager,
     private val tweaksRepository: TweaksRepository,
     private val seenReposRepository: SeenReposRepository,
+    private val hiddenReposRepository: HiddenReposRepository,
+    private val userSessionRepository: UserSessionRepository,
+    private val browseFilterStore: BrowseFilterStore,
+    private val logger: KomiStoreLogger,
+    private val shareManager: ShareManager,
 ) : ViewModel() {
+
+    private class ChartCache {
+        var repos: List<GithubRepoSummary> = emptyList()
+        var nextPage: Int = 1
+        var hasMore: Boolean = true
+        var loaded: Boolean = false
+    }
+
+    private val cache = ChartTab.entries.associateWith { ChartCache() }
+    private var selectedChart = ChartTab.Trending
+
     private var hasLoadedInitialData = false
-    private var currentJob: Job? = null
-    private var switchCategoryJob: Job? = null
-    private var topicSupplementJob: Job? = null
-    private var nextPageIndex = 1
+    private var loadJob: Job? = null
+    private var loadMoreJob: Job? = null
+
+    private var selectedPlatform: DiscoveryPlatform = DiscoveryPlatform.All
+    private var installedById: Map<Long, List<InstalledApp>> = emptyMap()
+    private var favouriteIds: Set<Long> = emptySet()
+    private var starredIds: Set<Long> = emptySet()
+    private var seenIds: Set<Long> = emptySet()
+    private var hiddenIds: Set<Long> = emptySet()
+    private var isHideSeenEnabled = false
+    private var currentUserLogin: String? = null
+    private var actionSheetRepoId: Long? = null
 
     private val _state = MutableStateFlow(HomeState())
-    val state =
-        _state
-            .onStart {
-                if (!hasLoadedInitialData) {
-                    syncSystemState()
+    val state: StateFlow<HomeState> = _state
+        .onStart {
+            if (!hasLoadedInitialData) {
+                selectedPlatform = browseFilterStore.platform.value
+                observeCurrentUser()
+                syncSystemState()
+                observeInstalledApps()
+                observeFavourites()
+                observeStarredRepos()
+                observeSeenRepos()
+                observeHiddenRepos()
+                observeBrowseFilter()
+                observeHideSeenEnabled()
+                loadChart(ChartTab.Trending, isRefresh = false)
+                hasLoadedInitialData = true
+            }
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = HomeState(),
+        )
 
-                    loadPlatform()
-                    loadRepos(isInitial = true)
-                    observeInstalledApps()
-                    observeFavourites()
-                    observeStarredRepos()
-                    observeLiquidGlassEnabled()
-                    observeSeenRepos()
-                    observeDiscoveryPlatform()
-                    observeHideSeenEnabled()
-
-                    hasLoadedInitialData = true
-                }
-            }.stateIn(
-                scope = viewModelScope,
-                started = SharingStarted.WhileSubscribed(5_000L),
-                initialValue = HomeState(),
-            )
-
-    private val _events = Channel<HomeEvent>()
+    private val _events = Channel<HomeEvent>(capacity = Channel.BUFFERED)
     val events = _events.receiveAsFlow()
+
+    fun onAction(action: HomeAction) {
+        when (action) {
+            HomeAction.OnRetry -> loadChart(selectedChart, isRefresh = false)
+
+            HomeAction.OnRefresh -> loadChart(selectedChart, isRefresh = true)
+
+            HomeAction.OnLoadMore -> loadMore()
+
+            is HomeAction.OnChartSelected -> selectChart(action.chart)
+
+            HomeAction.OnPlatformPopupOpen ->
+                _state.update { it.copy(isPlatformPopupVisible = true) }
+
+            HomeAction.OnPlatformPopupDismiss ->
+                _state.update { it.copy(isPlatformPopupVisible = false) }
+
+            is HomeAction.OnPlatformSelected -> {
+                _state.update { it.copy(isPlatformPopupVisible = false) }
+                browseFilterStore.setPlatform(action.platform)
+            }
+
+            is HomeAction.OnRepoLongClick -> {
+                actionSheetRepoId = action.repoId
+                rebuild()
+            }
+
+            HomeAction.OnActionSheetDismiss -> {
+                actionSheetRepoId = null
+                rebuild()
+            }
+
+            is HomeAction.OnShareClick -> viewModelScope.launch {
+                runCatching {
+                    shareManager.shareText("https://github-store.org/app?repo=${action.repo.fullName}")
+                }.onFailure { t ->
+                    logger.error("Failed to share link: ${t.message}")
+                    _events.send(HomeEvent.OnMessage(getString(Res.string.failed_to_share_link)))
+                    return@launch
+                }
+
+                if (isDesktop()) {
+                    _events.send(HomeEvent.OnMessage(getString(Res.string.link_copied_to_clipboard)))
+                }
+            }
+
+            is HomeAction.OnHideRepository -> viewModelScope.launch {
+                val repo = action.repo
+                try {
+                    hiddenReposRepository.hide(
+                        repoId = repo.id,
+                        repoName = repo.name,
+                        repoOwner = repo.owner.login,
+                        repoOwnerAvatarUrl = repo.owner.avatarUrl,
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    logger.warn("Hide repository failed for ${repo.id}: ${e.message}")
+                }
+            }
+
+            is HomeAction.OnMarkAsSeen -> viewModelScope.launch {
+                val repo = action.repo
+                try {
+                    seenReposRepository.markAsSeen(
+                        repoId = repo.id,
+                        repoName = repo.name,
+                        repoOwner = repo.owner.login,
+                        repoOwnerAvatarUrl = repo.owner.avatarUrl,
+                        repoDescription = repo.description,
+                        primaryLanguage = repo.language,
+                        repoUrl = repo.htmlUrl,
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    logger.warn("Mark as seen failed for ${repo.id}: ${e.message}")
+                }
+            }
+
+            is HomeAction.OnMarkAsUnseen -> viewModelScope.launch {
+                try {
+                    seenReposRepository.removeFromHistory(action.repoId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    logger.warn("Mark as unseen failed for ${action.repoId}: ${e.message}")
+                }
+            }
+
+            is HomeAction.OnRepoClick -> Unit
+        }
+    }
+
+    private fun selectChart(chart: ChartTab) {
+        if (chart == selectedChart) return
+        selectedChart = chart
+        rebuild()
+        viewModelScope.launch { _events.send(HomeEvent.OnScrollToListTop) }
+        if (!cache.getValue(chart).loaded) {
+            loadChart(chart, isRefresh = false)
+        }
+    }
+
+    private fun loadChart(tab: ChartTab, isRefresh: Boolean) {
+        loadJob?.cancel()
+        loadMoreJob?.cancel()
+        loadJob = viewModelScope.launch {
+            val c = cache.getValue(tab)
+            c.nextPage = 1
+            c.hasMore = true
+            if (!isRefresh) {
+                c.repos = emptyList()
+            }
+            if (tab == selectedChart) {
+                _state.update {
+                    it.copy(
+                        isLoading = !isRefresh,
+                        isRefreshing = isRefresh,
+                        isLoadingMore = false,
+                        errorMessage = null,
+                    )
+                }
+                if (!isRefresh) rebuild()
+            }
+            fetchPage(tab, page = 1, replace = true)
+        }
+    }
+
+    private fun loadMore() {
+        val c = cache.getValue(selectedChart)
+        if (!c.hasMore || _state.value.isLoadingMore || _state.value.isLoading) return
+        _state.update { it.copy(isLoadingMore = true) }
+        loadMoreJob = viewModelScope.launch {
+            fetchPage(selectedChart, page = c.nextPage, replace = false)
+        }
+    }
+
+    private suspend fun fetchPage(tab: ChartTab, page: Int, replace: Boolean) {
+        try {
+            val result = chartFlow(tab, page).first()
+            val c = cache.getValue(tab)
+            c.repos = if (replace) result.repos else (c.repos + result.repos).distinctBy { it.id }
+            c.hasMore = result.hasMore
+            c.nextPage = result.nextPageIndex
+            c.loaded = true
+            if (tab == selectedChart) {
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        isRefreshing = false,
+                        isLoadingMore = false,
+                        errorMessage = null,
+                    )
+                }
+            }
+            rebuild()
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: Throwable) {
+            logger.error("Chart $tab load failed: ${t.message}")
+            cache.getValue(tab).loaded = true
+            if (tab == selectedChart) {
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        isRefreshing = false,
+                        isLoadingMore = false,
+                        errorMessage = it.errorMessage ?: t.message
+                            ?: getString(Res.string.home_failed_to_load_repositories),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun platformSet(): Set<DiscoveryPlatform> =
+        if (selectedPlatform == DiscoveryPlatform.All) emptySet() else setOf(selectedPlatform)
+
+    private fun chartFlow(tab: ChartTab, page: Int): Flow<PaginatedDiscoveryRepositories> =
+        when (tab) {
+            ChartTab.Trending -> homeRepository.getTrendingRepositories(platformSet(), page)
+            ChartTab.Releases -> homeRepository.getHotReleaseRepositories(platformSet(), page)
+            ChartTab.Popular -> homeRepository.getMostPopular(platformSet(), page)
+        }
+
+    private fun resetAllCharts() {
+        cache.values.forEach { c ->
+            c.repos = emptyList()
+            c.nextPage = 1
+            c.hasMore = true
+            c.loaded = false
+        }
+    }
+
+    private fun rebuild() {
+        val c = cache.getValue(selectedChart)
+        val visible = c.repos.filterVisible().map { it.toCard() }.toImmutableList()
+        val sheetCard = actionSheetRepoId?.let { id ->
+            c.repos.firstOrNull { it.id == id }?.toCard()
+        }
+        _state.update {
+            it.copy(
+                selectedChart = selectedChart,
+                repos = visible,
+                hasMore = c.hasMore,
+                actionSheetCard = sheetCard,
+            )
+        }
+    }
+
+    private fun List<GithubRepoSummary>.filterVisible(): List<GithubRepoSummary> =
+        filter { repo ->
+            repo.id !in hiddenIds && (!isHideSeenEnabled || repo.id !in seenIds)
+        }
+
+    private fun GithubRepoSummary.toCard(): HomeRepoCardUi {
+        val apps = installedById[id].orEmpty()
+        return toHomeRepoCardUi(
+            repo = this,
+            isInstalled = apps.any { it.isReallyInstalled() },
+            isUpdateAvailable = apps.any { it.hasActualUpdate() },
+            isFavourite = id in favouriteIds,
+            isStarred = id in starredIds,
+            isSeen = id in seenIds,
+            isCurrentUserOwner = currentUserLogin != null &&
+                owner.login.equals(currentUserLogin, ignoreCase = true),
+        )
+    }
 
     private fun syncSystemState() {
         viewModelScope.launch {
@@ -88,410 +349,32 @@ class HomeViewModel(
                 if (result.isFailure) {
                     logger.warn("Initial sync had issues: ${result.exceptionOrNull()?.message}")
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.error("Initial sync failed: ${e.message}")
             }
         }
     }
 
-    private fun loadPlatform() {
-        _state.update {
-            it.copy(isAppsSectionVisible = platform == Platform.ANDROID)
-        }
-    }
-
     private fun observeInstalledApps() {
         viewModelScope.launch {
-            installedAppsRepository.getAllInstalledApps().collect { installedApps ->
-                val installedMap = installedApps.associateBy { it.repoId }
-                _state.update { current ->
-                    current.copy(
-                        repos =
-                            current.repos
-                                .map { homeRepo ->
-                                    val app = installedMap[homeRepo.repository.id]
-                                    homeRepo.copy(
-                                        isInstalled = app != null,
-                                        isUpdateAvailable = app?.isUpdateAvailable ?: false,
-                                    )
-                                }.toImmutableList(),
-                        isUpdateAvailable = installedMap.any { it.value.isUpdateAvailable },
-                    )
-                }
+            installedAppsRepository.getAllInstalledApps().collect { apps ->
+                installedById = apps.groupBy { it.repoId }
+                rebuild()
             }
         }
     }
 
-    private fun observeDiscoveryPlatform() {
+
+    private fun observeBrowseFilter() {
         viewModelScope.launch {
-            tweaksRepository.getDiscoveryPlatform().collect { platform ->
-                _state.update {
-                    it.copy(
-                        currentPlatform = platform,
-                    )
-                }
-            }
-        }
-    }
-
-    private fun loadRepos(
-        isInitial: Boolean = false,
-        category: HomeCategory? = null,
-        platform: DiscoveryPlatform? = null,
-        topic: TopicCategory? = null,
-        topicExplicitlySet: Boolean = false,
-    ): Job? {
-        currentJob?.cancel()
-        topicSupplementJob?.cancel()
-
-        if (_state.value.isLoading || _state.value.isLoadingMore) {
-            logger.debug("Already loading, skipping...")
-            return null
-        }
-
-        if (isInitial) {
-            nextPageIndex = 1
-        }
-
-        val targetCategory = category ?: _state.value.currentCategory
-        val targetPlatformDeffered =
-            viewModelScope.async {
-                tweaksRepository.getDiscoveryPlatform().first()
-            }
-        val targetTopic = if (topicExplicitlySet) topic else _state.value.selectedTopic
-
-        logger.debug("Loading repos: category=$targetCategory, topic=$targetTopic, page=$nextPageIndex, isInitial=$isInitial")
-
-        return viewModelScope
-            .launch {
-                val targetPlatform = platform ?: targetPlatformDeffered.await()
-
-                if (platform != null) {
-                    tweaksRepository.setDiscoveryPlatform(targetPlatform)
-                }
-
-                _state.update {
-                    it.copy(
-                        isLoading = isInitial,
-                        isLoadingMore = !isInitial,
-                        errorMessage = null,
-                        currentPlatform = targetPlatform,
-                        currentCategory = targetCategory,
-                        selectedTopic = targetTopic,
-                        repos = if (isInitial) persistentListOf() else it.repos,
-                    )
-                }
-
-                try {
-                    val flow =
-                        when (targetCategory) {
-                            HomeCategory.TRENDING -> {
-                                homeRepository.getTrendingRepositories(
-                                    platform = targetPlatform,
-                                    page = nextPageIndex,
-                                )
-                            }
-
-                            HomeCategory.HOT_RELEASE -> {
-                                homeRepository.getHotReleaseRepositories(
-                                    platform = targetPlatform,
-                                    page = nextPageIndex,
-                                )
-                            }
-
-                            HomeCategory.MOST_POPULAR -> {
-                                homeRepository.getMostPopular(
-                                    platform = targetPlatform,
-                                    page = nextPageIndex,
-                                )
-                            }
-                        }
-
-                    flow.collect { paginatedRepos ->
-                        logger.debug(
-                            "Received ${paginatedRepos.repos.size} repos, hasMore=${paginatedRepos.hasMore}, nextPage=${paginatedRepos.nextPageIndex}",
-                        )
-
-                        this@HomeViewModel.nextPageIndex = paginatedRepos.nextPageIndex
-
-                        val repos =
-                            if (targetTopic != null) {
-                                paginatedRepos.repos.filter { repo ->
-                                    targetTopic.matchesRepo(repo.topics, repo.description, repo.name)
-                                }
-                            } else {
-                                paginatedRepos.repos
-                            }
-
-                        val newReposWithStatus = mapReposToUi(repos)
-
-                        _state.update { currentState ->
-                            val rawList = currentState.repos + newReposWithStatus
-                            val uniqueList = rawList.distinctBy { it.repository.fullName }
-
-                            currentState.copy(
-                                repos = uniqueList.toImmutableList(),
-                                hasMorePages = paginatedRepos.hasMore,
-                                errorMessage =
-                                    if (uniqueList.isEmpty() && !paginatedRepos.hasMore) {
-                                        getString(Res.string.no_repositories_found)
-                                    } else {
-                                        null
-                                    },
-                            )
-                        }
-                    }
-
-                    logger.debug("Flow completed")
-                    _state.update {
-                        it.copy(isLoading = false, isLoadingMore = false)
-                    }
-
-                    if (targetTopic != null && isInitial) {
-                        loadTopicSupplement(targetTopic, targetPlatform)
-                    }
-                } catch (t: Throwable) {
-                    if (t is CancellationException) {
-                        logger.debug("Load cancelled (expected)")
-                        throw t
-                    }
-
-                    logger.error("Load failed: ${t.message}")
-                    _state.update {
-                        it.copy(
-                            isLoading = false,
-                            isLoadingMore = false,
-                            errorMessage =
-                                t.message
-                                    ?: getString(Res.string.home_failed_to_load_repositories),
-                        )
-                    }
-                }
-            }.also {
-                currentJob = it
-            }
-    }
-
-    private fun loadTopicSupplement(
-        topic: TopicCategory,
-        platform: DiscoveryPlatform,
-    ) {
-        topicSupplementJob?.cancel()
-        topicSupplementJob =
-            viewModelScope.launch {
-                _state.update { it.copy(isLoadingTopicSupplement = true) }
-
-                try {
-                    // Phase 1: Load pre-fetched cached topic repos (instant, no API cost)
-                    homeRepository
-                        .getTopicRepositories(
-                            topic = topic,
-                            platform = platform,
-                        ).collect { paginatedRepos ->
-                            if (paginatedRepos.repos.isNotEmpty()) {
-                                val cachedReposWithStatus = mapReposToUi(paginatedRepos.repos)
-
-                                _state.update { currentState ->
-                                    val merged =
-                                        (currentState.repos + cachedReposWithStatus)
-                                            .distinctBy { it.repository.fullName }
-
-                                    currentState.copy(
-                                        repos = merged.toImmutableList(),
-                                    )
-                                }
-
-                                logger.debug("Loaded ${paginatedRepos.repos.size} cached topic repos for ${topic.name}")
-                            }
-                        }
-
-                    // Phase 2: Supplement with live GitHub search (fills gaps)
-                    homeRepository
-                        .searchByTopic(
-                            searchKeywords = topic.searchKeywords,
-                            platform = platform,
-                            page = 1,
-                        ).collect { paginatedRepos ->
-                            val newReposWithStatus = mapReposToUi(paginatedRepos.repos)
-
-                            _state.update { currentState ->
-                                val merged =
-                                    (currentState.repos + newReposWithStatus)
-                                        .distinctBy { it.repository.fullName }
-
-                                currentState.copy(
-                                    repos = merged.toImmutableList(),
-                                    hasMorePages = currentState.hasMorePages || paginatedRepos.hasMore,
-                                )
-                            }
-                        }
-                } catch (t: Throwable) {
-                    if (t is CancellationException) throw t
-                    logger.warn("Topic supplement search failed: ${t.message}")
-                } finally {
-                    _state.update { it.copy(isLoadingTopicSupplement = false) }
-                }
-            }
-    }
-
-    private suspend fun mapReposToUi(repos: List<zed.rainxch.core.domain.model.GithubRepoSummary>): List<DiscoveryRepositoryUi> {
-        val installedAppsMap =
-            installedAppsRepository
-                .getAllInstalledApps()
-                .first()
-                .associateBy { it.repoId }
-
-        val favoritesMap =
-            favouritesRepository
-                .getAllFavorites()
-                .first()
-                .associateBy { it.repoId }
-
-        val starredReposMap =
-            starredRepository
-                .getAllStarred()
-                .first()
-                .associateBy { it.repoId }
-
-        val seenIds = _state.value.seenRepoIds
-
-        return repos.map { repo ->
-            val app = installedAppsMap[repo.id]
-            val favourite = favoritesMap[repo.id]
-            val starred = starredReposMap[repo.id]
-
-            DiscoveryRepositoryUi(
-                isInstalled = app != null,
-                isFavourite = favourite != null,
-                isStarred = starred != null,
-                isSeen = repo.id in seenIds,
-                isUpdateAvailable = app?.isUpdateAvailable ?: false,
-                repository = repo.toUi(),
-            )
-        }
-    }
-
-    fun onAction(action: HomeAction) {
-        when (action) {
-            HomeAction.Refresh -> {
-                viewModelScope.launch {
-                    syncInstalledAppsUseCase()
-                    nextPageIndex = 1
-                    loadRepos(isInitial = true)
-                }
-            }
-
-            HomeAction.Retry -> {
-                nextPageIndex = 1
-                loadRepos(isInitial = true)
-            }
-
-            HomeAction.LoadMore -> {
-                logger.debug(
-                    "LoadMore action: isLoading=${_state.value.isLoading}, isLoadingMore=${_state.value.isLoadingMore}, hasMore=${_state.value.hasMorePages}",
-                )
-
-                if (!_state.value.isLoadingMore && !_state.value.isLoading && _state.value.hasMorePages) {
-                    loadRepos(isInitial = false)
-                }
-            }
-
-            is HomeAction.SwitchTopic -> {
-                val newTopic = if (_state.value.selectedTopic == action.topic) null else action.topic
-                if (_state.value.selectedTopic != newTopic) {
-                    nextPageIndex = 1
-                    switchCategoryJob?.cancel()
-                    switchCategoryJob =
-                        viewModelScope.launch {
-                            loadRepos(
-                                isInitial = true,
-                                topic = newTopic,
-                                topicExplicitlySet = true,
-                            )?.join() ?: return@launch
-                            _events.send(HomeEvent.OnScrollToListTop)
-                        }
-                }
-            }
-
-            is HomeAction.SwitchCategory -> {
-                if (_state.value.currentCategory != action.category) {
-                    nextPageIndex = 1
-                    switchCategoryJob?.cancel()
-                    switchCategoryJob =
-                        viewModelScope.launch {
-                            loadRepos(isInitial = true, category = action.category)?.join()
-                                ?: return@launch
-                            _events.send(HomeEvent.OnScrollToListTop)
-                        }
-                }
-            }
-
-            is HomeAction.OnShareClick -> {
-                viewModelScope.launch {
-                    runCatching {
-                        shareManager.shareText("https://github-store.org/app?repo=${action.repo.fullName}")
-                    }.onFailure { t ->
-                        logger.error("Failed to share link: ${t.message}")
-                        _events.send(
-                            OnMessage(getString(Res.string.failed_to_share_link)),
-                        )
-                        return@launch
-                    }
-
-                    if (platform != Platform.ANDROID) {
-                        _events.send(OnMessage(getString(Res.string.link_copied_to_clipboard)))
-                    }
-                }
-            }
-
-            is HomeAction.SwitchDiscoveryPlatform -> {
-                if (_state.value.currentPlatform != action.platform) {
-                    nextPageIndex = 1
-                    switchCategoryJob?.cancel()
-                    switchCategoryJob =
-                        viewModelScope.launch {
-                            loadRepos(isInitial = true, platform = action.platform)?.join()
-                                ?: return@launch
-                            _events.send(OnScrollToListTop)
-                        }
-                }
-            }
-
-            HomeAction.OnTogglePlatformPopup -> {
-                _state.update {
-                    it.copy(
-                        isPlatformPopupVisible = !it.isPlatformPopupVisible,
-                    )
-                }
-            }
-
-            is HomeAction.OnRepositoryClick -> {
-                // Handled in composable
-            }
-
-            is HomeAction.OnRepositoryDeveloperClick -> {
-                // Handled in composable
-            }
-
-            HomeAction.OnSearchClick -> {
-                // Handled in composable
-            }
-
-            HomeAction.OnSettingsClick -> {
-                // Handled in composable
-            }
-
-            HomeAction.OnAppsClick -> {
-                // Handled in composable
-            }
-        }
-    }
-
-    private fun observeLiquidGlassEnabled() {
-        viewModelScope.launch {
-            tweaksRepository.getLiquidGlassEnabled().collect { enabled ->
-                _state.update {
-                    it.copy(isLiquidGlassEnabled = enabled)
+            browseFilterStore.platform.collect { next ->
+                _state.update { it.copy(selectedPlatform = next) }
+                if (next != selectedPlatform) {
+                    selectedPlatform = next
+                    resetAllCharts()
+                    loadChart(selectedChart, isRefresh = false)
                 }
             }
         }
@@ -500,16 +383,17 @@ class HomeViewModel(
     private fun observeSeenRepos() {
         viewModelScope.launch {
             seenReposRepository.getAllSeenRepoIds().collect { ids ->
-                _state.update { current ->
-                    current.copy(
-                        seenRepoIds = ids,
-                        repos =
-                            current.repos
-                                .map { repo ->
-                                    repo.copy(isSeen = repo.repository.id in ids)
-                                }.toImmutableList(),
-                    )
-                }
+                seenIds = ids
+                rebuild()
+            }
+        }
+    }
+
+    private fun observeHiddenRepos() {
+        viewModelScope.launch {
+            hiddenReposRepository.getAllHiddenRepoIds().collect { ids ->
+                hiddenIds = ids
+                rebuild()
             }
         }
     }
@@ -517,7 +401,17 @@ class HomeViewModel(
     private fun observeHideSeenEnabled() {
         viewModelScope.launch {
             tweaksRepository.getHideSeenEnabled().collect { enabled ->
-                _state.update { it.copy(isHideSeenEnabled = enabled) }
+                isHideSeenEnabled = enabled
+                rebuild()
+            }
+        }
+    }
+
+    private fun observeCurrentUser() {
+        viewModelScope.launch {
+            userSessionRepository.getUser().collect { user ->
+                currentUserLogin = user?.username
+                rebuild()
             }
         }
     }
@@ -525,44 +419,24 @@ class HomeViewModel(
     private fun observeFavourites() {
         viewModelScope.launch {
             favouritesRepository.getAllFavorites().collect { favourites ->
-                val favouritesMap = favourites.associateBy { it.repoId }
-                _state.update { current ->
-                    current.copy(
-                        repos =
-                            current.repos
-                                .map { homeRepo ->
-                                    homeRepo.copy(
-                                        isFavourite = favouritesMap.containsKey(homeRepo.repository.id),
-                                    )
-                                }.toImmutableList(),
-                    )
-                }
+                favouriteIds = favourites.map { it.repoId }.toSet()
+                rebuild()
             }
         }
     }
 
     private fun observeStarredRepos() {
         viewModelScope.launch {
-            starredRepository.getAllStarred().collect { starredRepos ->
-                val starredReposById = starredRepos.associateBy { it.repoId }
-                _state.update { current ->
-                    current.copy(
-                        repos =
-                            current.repos
-                                .map { homeRepo ->
-                                    homeRepo.copy(
-                                        isStarred = starredReposById.containsKey(homeRepo.repository.id),
-                                    )
-                                }.toImmutableList(),
-                    )
-                }
+            starredRepository.getAllStarred().collect { starred ->
+                starredIds = starred.map { it.repoId }.toSet()
+                rebuild()
             }
         }
     }
 
     override fun onCleared() {
         super.onCleared()
-        currentJob?.cancel()
-        topicSupplementJob?.cancel()
+        loadJob?.cancel()
+        loadMoreJob?.cancel()
     }
 }

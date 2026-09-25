@@ -13,15 +13,20 @@ data class BackendRepoResponse(
     val htmlUrl: String,
     val stargazersCount: Int,
     val forksCount: Int,
+    val openIssuesCount: Int = 0,
+    val license: BackendLicense? = null,
     val language: String? = null,
     val topics: List<String> = emptyList(),
+    val topicCodes: List<String> = emptyList(),
     val releasesUrl: String? = null,
     val updatedAt: String? = null,
+    val pushedAt: String? = null,
     val createdAt: String? = null,
     val latestReleaseDate: String? = null,
     val latestReleaseTag: String? = null,
     val releaseRecency: Int? = null,
     val releaseRecencyText: String? = null,
+    val dailyStars: Int? = null,
     val trendingScore: Double? = null,
     val popularityScore: Double? = null,
     val hasInstallersAndroid: Boolean = false,
@@ -29,10 +34,4 @@ data class BackendRepoResponse(
     val hasInstallersMacos: Boolean = false,
     val hasInstallersLinux: Boolean = false,
     val downloadCount: Long = 0,
-)
-
-@Serializable
-data class BackendRepoOwner(
-    val login: String,
-    val avatarUrl: String? = null,
 )

@@ -6,7 +6,7 @@ import zed.rainxch.core.data.local.db.dao.FavoriteRepoDao
 import zed.rainxch.core.data.local.db.dao.InstalledAppDao
 import zed.rainxch.core.data.mappers.toDomain
 import zed.rainxch.core.data.mappers.toEntity
-import zed.rainxch.core.domain.model.FavoriteRepo
+import zed.rainxch.core.domain.model.repository.FavoriteRepo
 import zed.rainxch.core.domain.repository.FavouritesRepository
 
 class FavouritesRepositoryImpl(
@@ -25,13 +25,14 @@ class FavouritesRepositoryImpl(
     override suspend fun isFavoriteSync(repoId: Long): Boolean = favoriteRepoDao.isFavoriteSync(repoId)
 
     suspend fun addFavorite(repo: FavoriteRepo) {
-        val installedApp = installedAppsDao.getAppByRepoId(repo.repoId)
+        val installedApps = installedAppsDao.getAppsByRepoId(repo.repoId)
+        val firstInstalled = installedApps.firstOrNull { !it.isPendingInstall }
         favoriteRepoDao.insertFavorite(
             repo
                 .toEntity()
                 .copy(
-                    isInstalled = installedApp != null,
-                    installedPackageName = installedApp?.packageName,
+                    isInstalled = firstInstalled != null,
+                    installedPackageName = firstInstalled?.packageName,
                 ),
         )
     }

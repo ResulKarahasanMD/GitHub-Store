@@ -8,78 +8,130 @@ import org.jetbrains.compose.resources.stringResource
 import zed.rainxch.githubstore.core.presentation.res.*
 import kotlin.time.Clock
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.days
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalTime::class)
 private fun parseIsoInstantLenient(isoInstant: String): Instant? {
-    // Trim up front so `Instant.parse` doesn't choke on surrounding
-    // whitespace (which it treats as invalid) while `isBlank()` was
-    // already masking the empty-after-trim case.
     val trimmed = isoInstant.trim()
     if (trimmed.isEmpty()) return null
     runCatching { return Instant.parse(trimmed) }
 
-    // Backend occasionally returns timestamps without seconds (e.g. "2024-10-16T17:00Z").
-    // Retry after inserting ":00" before the timezone designator.
-    val normalized = runCatching {
-        val tzStart = trimmed.indexOfAny(charArrayOf('Z', '+', '-'), startIndex = 11)
-        if (tzStart < 0) return@runCatching null
-        val head = trimmed.substring(0, tzStart)
-        val tail = trimmed.substring(tzStart)
-        val colonCount = head.count { it == ':' }
-        when (colonCount) {
-            1 -> head + ":00" + tail
-            0 -> head + ":00:00" + tail
-            else -> null
-        }
-    }.getOrNull() ?: return null
+    if (trimmed.length == 10 && trimmed[4] == '-' && trimmed[7] == '-') {
+        runCatching { return Instant.parse(trimmed + "T00:00:00Z") }
+    }
+
+    var s = trimmed
+    if (s.length > 10 && s[10] == ' ') {
+        s = s.substring(0, 10) + "T" + s.substring(11)
+    }
+    val n = s.length
+    if (s.contains('T') && n >= 3 &&
+        (s[n - 3] == '+' || s[n - 3] == '-') && s[n - 2].isDigit() && s[n - 1].isDigit()
+    ) {
+        s += ":00"
+    }
+    runCatching { return Instant.parse(s) }
+
+    val normalized =
+        runCatching {
+            val tzStart = trimmed.indexOfAny(charArrayOf('Z', '+', '-'), startIndex = 11)
+            if (tzStart < 0) return@runCatching null
+            val head = trimmed.substring(0, tzStart)
+            val tail = trimmed.substring(tzStart)
+            val colonCount = head.count { it == ':' }
+            when (colonCount) {
+                1 -> "$head:00$tail"
+                0 -> "$head:00:00$tail"
+                else -> null
+            }
+        }.getOrNull() ?: return null
 
     return runCatching { Instant.parse(normalized) }.getOrNull()
 }
 
 @OptIn(ExperimentalTime::class)
-fun hasWeekNotPassed(isoInstant: String): Boolean {
-    val updated = parseIsoInstantLenient(isoInstant) ?: return false
-    val now = Clock.System.now()
-    val diff = now - updated
-
-    return diff < 7.days
+fun daysSinceIso(isoInstant: String?): Int? {
+    val instant = isoInstant?.let { parseIsoInstantLenient(it) } ?: return null
+    return (Clock.System.now() - instant).inWholeDays.toInt()
 }
 
 @OptIn(ExperimentalTime::class)
 @Composable
-fun formatReleasedAt(isoInstant: String): String {
-    val updated = parseIsoInstantLenient(isoInstant)
-        ?: return isoInstant.trim().substringBefore('T').ifBlank { "" }
-    val now = Instant.fromEpochMilliseconds(Clock.System.now().toEpochMilliseconds())
-    val diff: Duration = now - updated
-
-    val hoursDiff = diff.inWholeHours
-    val daysDiff = diff.inWholeDays
-
+fun formatReleasedAgo(isoInstant: String?): String? {
+    val instant = isoInstant?.let { parseIsoInstantLenient(it) } ?: return null
+    val diff = Clock.System.now() - instant
+    val minutes = if (diff.isNegative()) 0L else diff.inWholeMinutes
     return when {
-        hoursDiff < 1 -> {
-            stringResource(Res.string.released_just_now)
+        minutes < 1L -> stringResource(Res.string.just_now)
+        minutes < 60L -> stringResource(Res.string.time_minutes_ago, minutes.toInt())
+        diff.inWholeHours < 24L -> stringResource(Res.string.time_hours_ago, diff.inWholeHours.toInt())
+        diff.inWholeDays < 7L -> stringResource(Res.string.time_days_ago, diff.inWholeDays.toInt())
+        diff.inWholeDays < 30L -> stringResource(Res.string.time_weeks_ago, (diff.inWholeDays / 7.0).roundToInt())
+        diff.inWholeDays < 365L -> stringResource(Res.string.time_months_ago, (diff.inWholeDays / 30.0).roundToInt())
+        else -> stringResource(Res.string.time_years_ago, (diff.inWholeDays / 365.0).roundToInt())
+    }
+}
+
+@OptIn(ExperimentalTime::class)
+@Composable
+fun formatRelativeLong(isoInstant: String): String {
+    val instant = parseIsoInstantLenient(isoInstant) ?: return isoInstant
+    val duration = Clock.System.now() - instant
+    return when {
+        duration.inWholeDays > 365 -> {
+            stringResource(Res.string.time_years_ago, (duration.inWholeDays / 365).toInt())
         }
 
-        hoursDiff < 24 -> {
-            stringResource(Res.string.released_hours_ago, hoursDiff)
+        duration.inWholeDays > 30 -> {
+            stringResource(Res.string.time_months_ago, (duration.inWholeDays / 30).toInt())
         }
 
-        daysDiff == 1L -> {
-            stringResource(Res.string.released_yesterday)
+        duration.inWholeDays > 0 -> {
+            stringResource(Res.string.time_days_ago, duration.inWholeDays.toInt())
         }
 
-        daysDiff < 7 -> {
-            stringResource(Res.string.released_days_ago, daysDiff)
+        duration.inWholeHours > 0 -> {
+            stringResource(Res.string.time_hours_ago, duration.inWholeHours.toInt())
+        }
+
+        duration.inWholeMinutes > 0 -> {
+            stringResource(Res.string.time_minutes_ago, duration.inWholeMinutes.toInt())
         }
 
         else -> {
-            val date = updated.toLocalDateTime(TimeZone.currentSystemDefault()).date
-            stringResource(Res.string.released_on_date, date.toString())
+            stringResource(Res.string.just_now)
         }
+    }
+}
+
+@OptIn(ExperimentalTime::class)
+fun formatIsoDate(isoTimestamp: String?): String? {
+    val instant = isoTimestamp?.let { parseIsoInstantLenient(it) } ?: return null
+    return instant.toLocalDateTime(TimeZone.currentSystemDefault()).date.toString()
+}
+
+@OptIn(ExperimentalTime::class)
+fun formatEpochDate(timestamp: Long): String? {
+    if (timestamp <= 0L) return null
+    return Instant
+        .fromEpochMilliseconds(timestamp)
+        .toLocalDateTime(TimeZone.currentSystemDefault())
+        .date
+        .toString()
+}
+
+@OptIn(ExperimentalTime::class)
+@Composable
+fun formatLastChecked(timestamp: Long): String {
+    val diffMs = Clock.System.now().toEpochMilliseconds() - timestamp
+    val minutes = diffMs / 60_000L
+    val hours = diffMs / 3_600_000L
+    return when {
+        minutes < 1 -> stringResource(Res.string.last_checked_just_now)
+        minutes < 60 -> stringResource(Res.string.last_checked_minutes_ago, minutes.toInt())
+        else -> stringResource(Res.string.last_checked_hours_ago, hours.toInt())
     }
 }
 

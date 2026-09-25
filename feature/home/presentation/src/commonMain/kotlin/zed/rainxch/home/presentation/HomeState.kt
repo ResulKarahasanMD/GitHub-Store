@@ -1,28 +1,29 @@
 package zed.rainxch.home.presentation
 
+import androidx.compose.runtime.Stable
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
-import zed.rainxch.core.domain.model.DiscoveryPlatform
-import zed.rainxch.core.domain.model.InstalledApp
-import zed.rainxch.core.presentation.model.DiscoveryRepositoryUi
-import zed.rainxch.home.domain.model.HomeCategory
-import zed.rainxch.home.domain.model.TopicCategory
+import zed.rainxch.core.domain.model.repository.DiscoveryPlatform
+import zed.rainxch.home.presentation.model.ChartTab
+import zed.rainxch.home.presentation.model.HomeRepoCardUi
 
+@Stable
 data class HomeState(
-    val repos: ImmutableList<DiscoveryRepositoryUi> = persistentListOf(),
-    val installedApps: ImmutableList<InstalledApp> = persistentListOf(),
+    val selectedChart: ChartTab = ChartTab.Trending,
+    val repos: ImmutableList<HomeRepoCardUi> = persistentListOf(),
     val isLoading: Boolean = false,
     val isLoadingMore: Boolean = false,
-    val isLoadingTopicSupplement: Boolean = false,
+    val isRefreshing: Boolean = false,
+    val hasMore: Boolean = true,
     val errorMessage: String? = null,
-    val hasMorePages: Boolean = true,
-    val currentCategory: HomeCategory = HomeCategory.TRENDING,
-    val selectedTopic: TopicCategory? = null,
-    val isAppsSectionVisible: Boolean = false,
-    val isUpdateAvailable: Boolean = false,
-    val currentPlatform: DiscoveryPlatform = DiscoveryPlatform.All,
+    val selectedPlatform: DiscoveryPlatform = DiscoveryPlatform.All,
+    val platformOptions: ImmutableList<DiscoveryPlatform> = persistentListOf(
+        DiscoveryPlatform.All,
+        DiscoveryPlatform.Android,
+        DiscoveryPlatform.Windows,
+        DiscoveryPlatform.Macos,
+        DiscoveryPlatform.Linux,
+    ),
     val isPlatformPopupVisible: Boolean = false,
-    val isLiquidGlassEnabled: Boolean = true,
-    val isHideSeenEnabled: Boolean = false,
-    val seenRepoIds: Set<Long> = emptySet(),
+    val actionSheetCard: HomeRepoCardUi? = null,
 )

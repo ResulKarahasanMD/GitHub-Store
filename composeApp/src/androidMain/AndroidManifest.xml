@@ -17,6 +17,35 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!--
+        Whitelisted use: aggressive-OEM ROMs (Oppo / OnePlus / Realme /
+        Xiaomi / vivo / Honor) routinely kill background WorkManager
+        tasks even when the user has scheduled a periodic update check
+        through Komi Store's own settings. Surfaced via a one-time
+        prompt — never required, never re-nagged after dismissal.
+    -->
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:ignore="BatteryLife" />
+
+    <uses-permission android:name="com.rosan.dhizuku.permission.API" />
+
+    <!--
+        Fallback visibility for installer-source classification when
+        QUERY_ALL_PACKAGES is denied on Android 11+. We need to recognise
+        these specific packages as install sources even without blanket
+        package visibility.
+    -->
+    <queries>
+        <package android:name="dev.imranr.obtainium.app" />
+        <package android:name="dev.imranr.obtainium" />
+        <package android:name="dev.imranr.obtainium.fdroid" />
+        <package android:name="org.fdroid.fdroid" />
+        <package android:name="com.android.vending" />
+        <package android:name="com.aurora.store" />
+        <package android:name="com.rosan.dhizuku" />
+        <provider android:authorities="com.rosan.dhizuku.server.provider" />
+    </queries>
 
     <application
         android:name=".app.GithubStoreApp"
@@ -76,6 +105,17 @@
             </intent-filter>
 
             <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="auth"
+                    android:scheme="githubstore" />
+            </intent-filter>
+
+            <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
@@ -104,6 +144,10 @@
                 <data android:pathPrefix="/app/" />
 
             </intent-filter>
+
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <provider
@@ -134,6 +178,19 @@
                 <action android:name="android.intent.action.PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.PACKAGE_FULLY_REMOVED" />
                 <data android:scheme="package" />
+            </intent-filter>
+            <!-- Self-update detection: MY_PACKAGE_REPLACED has no data scheme -->
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Cancel action fired from the download progress notification (#373) -->
+        <receiver
+            android:name="zed.rainxch.core.data.services.DownloadCancelReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="zed.rainxch.githubstore.action.CANCEL_DOWNLOAD" />
             </intent-filter>
         </receiver>
 

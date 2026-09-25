@@ -15,6 +15,7 @@ kotlin {
         commonMain {
             dependencies {
                 implementation(libs.kotlin.stdlib)
+                implementation(libs.kotlinx.datetime)
 
                 implementation(projects.core.domain)
 
@@ -23,20 +24,26 @@ kotlin {
 
                 implementation(libs.touchlab.kermit)
 
+                implementation(libs.ksafe)
+
                 implementation(libs.datastore)
                 implementation(libs.datastore.preferences)
-
-                implementation(libs.kotlinx.datetime)
             }
         }
 
         androidMain {
             dependencies {
-                implementation(libs.ktor.client.okhttp)
-                implementation(libs.androidx.work.runtime)
                 implementation(libs.shizuku.api)
                 implementation(libs.shizuku.provider)
                 compileOnly(libs.hidden.api.stub)
+
+                implementation(libs.dhizuku.api)
+
+                implementation(libs.libsu.core)
+
+                implementation(libs.ktor.client.okhttp)
+
+                implementation(libs.androidx.work.runtime)
             }
         }
 

@@ -7,22 +7,19 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import zed.rainxch.core.data.network.TranslationClientProvider
 import zed.rainxch.core.data.services.LocalizationManager
-import zed.rainxch.core.domain.model.TranslationProvider
+import zed.rainxch.core.domain.model.settings.TranslationProvider
 import zed.rainxch.core.domain.repository.TweaksRepository
 import zed.rainxch.details.data.translation.GoogleTranslator
 import zed.rainxch.details.data.translation.Translator
+import zed.rainxch.details.data.translation.DeeplTranslator
+import zed.rainxch.details.data.translation.LibreTranslator
+import zed.rainxch.details.data.translation.MicrosoftTranslator
 import zed.rainxch.details.data.translation.YoudaoTranslator
 import zed.rainxch.details.domain.model.TranslationResult
 import zed.rainxch.details.domain.repository.TranslationRepository
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
-/**
- * Orchestrates translation: picks the user-configured [Translator]
- * ([TranslationProvider]), drives chunking + caching in this layer
- * (so each concrete translator only has to round-trip a single
- * chunk), and stitches results back together.
- */
 class TranslationRepositoryImpl(
     private val localizationManager: LocalizationManager,
     private val clientProvider: TranslationClientProvider,
@@ -36,8 +33,6 @@ class TranslationRepositoryImpl(
             isLenient = true
         }
 
-    // Google's provider has no per-install config — share a single
-    // instance for the lifetime of the repository.
     private val googleTranslator: GoogleTranslator =
         GoogleTranslator(httpClient = { httpClient }, json = json)
 
@@ -59,8 +54,10 @@ class TranslationRepositoryImpl(
             }
         }
 
+        val protection = protectFromTranslation(text)
+
         val translator = resolveTranslator()
-        val chunks = chunkText(text, translator.maxChunkSize)
+        val chunks = chunkText(protection.maskedText, translator.maxChunkSize)
         val translatedParts = mutableListOf<Pair<String, String>>()
         var detectedLang: String? = null
 
@@ -72,13 +69,15 @@ class TranslationRepositoryImpl(
             }
         }
 
+        val joined =
+            translatedParts
+                .dropLast(1)
+                .joinToString("") { (text, delim) -> text + delim } +
+                translatedParts.lastOrNull()?.first.orEmpty()
+
         val result =
             TranslationResult(
-                translatedText =
-                    translatedParts
-                        .dropLast(1)
-                        .joinToString("") { (text, delim) -> text + delim } +
-                        translatedParts.lastOrNull()?.first.orEmpty(),
+                translatedText = restoreProtectedSpans(joined, protection.spans),
                 detectedSourceLanguage = detectedLang,
             )
 
@@ -92,14 +91,71 @@ class TranslationRepositoryImpl(
         return result
     }
 
+    private fun protectFromTranslation(text: String): TranslationProtection {
+        val spans = mutableListOf<String>()
+        var masked = text
+
+        masked = Regex("```[\\s\\S]*?```", RegexOption.MULTILINE).replace(masked) { match ->
+            replaceWithMarker(spans, match.value)
+        }
+
+        masked = Regex("<[^/!][a-zA-Z0-9]*[^>]*?/>").replace(masked) { match ->
+            replaceWithMarker(spans, match.value)
+        }
+        masked = Regex(
+            "<(a|img|picture|source|video|audio|svg)\\b[^>]*>[\\s\\S]*?</\\1>",
+            RegexOption.IGNORE_CASE,
+        ).replace(masked) { match ->
+            replaceWithMarker(spans, match.value)
+        }
+        masked = Regex("<img\\b[^>]*>", RegexOption.IGNORE_CASE).replace(masked) { match ->
+            replaceWithMarker(spans, match.value)
+        }
+
+        masked = Regex("\\]\\(([^)]+)\\)").replace(masked) { match ->
+            val url = match.groupValues[1]
+            "](" + replaceWithMarker(spans, url) + ")"
+        }
+
+        masked = Regex("https?://[^\\s<>\")]+").replace(masked) { match ->
+            replaceWithMarker(spans, match.value)
+        }
+
+        masked = Regex(
+            "\\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\\]",
+            RegexOption.IGNORE_CASE,
+        ).replace(masked) { match ->
+            replaceWithMarker(spans, match.value)
+        }
+
+        return TranslationProtection(masked, spans)
+    }
+
+    private fun replaceWithMarker(spans: MutableList<String>, value: String): String {
+        val idx = spans.size
+        spans += value
+
+        return "⟦TR_${idx}_END⟧"
+    }
+
+    private fun restoreProtectedSpans(translated: String, spans: List<String>): String {
+        if (spans.isEmpty()) return translated
+        var result = translated
+        spans.forEachIndexed { i, original ->
+
+            val pattern = Regex("⟦\\s*TR_\\s*${i}\\s*_END\\s*⟧")
+            result = pattern.replaceFirst(result, Regex.escapeReplacement(original))
+        }
+        return result
+    }
+
+    private data class TranslationProtection(
+        val maskedText: String,
+        val spans: List<String>,
+    )
+
     override fun getDeviceLanguageCode(): String = localizationManager.getPrimaryLanguageCode()
 
-    /**
-     * Resolves the currently-selected translator from preferences.
-     * Called per request rather than held as a field so provider /
-     * credential changes take effect on the next translation without
-     * requiring the repository to be rebuilt.
-     */
     private suspend fun resolveTranslator(): Translator {
         val provider = tweaksRepository.getTranslationProvider().first()
         return when (provider) {
@@ -112,6 +168,35 @@ class TranslationRepositoryImpl(
                     json = json,
                     appKey = appKey,
                     appSecret = appSecret,
+                )
+            }
+            TranslationProvider.LIBRE_TRANSLATE -> {
+                val configured = tweaksRepository.getLibreTranslateBaseUrl().first()
+                val baseUrl = configured.takeIf { it.isNotBlank() } ?: LIBRE_TRANSLATE_DEFAULT_URL
+                val apiKey = tweaksRepository.getLibreTranslateApiKey().first().takeIf { it.isNotBlank() }
+                LibreTranslator(
+                    httpClient = { httpClient },
+                    json = json,
+                    baseUrl = baseUrl,
+                    apiKey = apiKey,
+                )
+            }
+            TranslationProvider.DEEPL -> {
+                val authKey = tweaksRepository.getDeeplAuthKey().first()
+                DeeplTranslator(
+                    httpClient = { httpClient },
+                    json = json,
+                    authKey = authKey,
+                )
+            }
+            TranslationProvider.MICROSOFT -> {
+                val key = tweaksRepository.getMicrosoftTranslatorKey().first()
+                val region = tweaksRepository.getMicrosoftTranslatorRegion().first()
+                MicrosoftTranslator(
+                    httpClient = { httpClient },
+                    json = json,
+                    subscriptionKey = key,
+                    subscriptionRegion = region,
                 )
             }
         }
@@ -183,7 +268,9 @@ class TranslationRepositoryImpl(
 
     companion object {
         private const val MAX_CACHE_SIZE = 50
-        private const val CACHE_TTL_MS = 30 * 60 * 1000L // 30 minutes
+        private const val CACHE_TTL_MS = 30 * 60 * 1000L
+
+        private const val LIBRE_TRANSLATE_DEFAULT_URL = "https://translate.disroot.org"
     }
 
     @OptIn(ExperimentalTime::class)

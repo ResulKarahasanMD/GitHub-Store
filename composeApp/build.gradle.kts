@@ -14,6 +14,10 @@ android {
 }
 
 kotlin {
+    compilerOptions {
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
+
     sourceSets {
         androidMain.dependencies {
             implementation(libs.androidx.compose.ui.tooling.preview)
@@ -27,6 +31,10 @@ kotlin {
             implementation(projects.core.data)
             implementation(projects.core.domain)
             implementation(projects.core.presentation)
+
+            // Coil SVG decoder registered in App() via SingletonImageLoaderFactory
+            implementation(libs.coil3.compose)
+            implementation(libs.coil3.svg)
 
             implementation(projects.feature.apps.domain)
             implementation(projects.feature.apps.data)
@@ -44,6 +52,10 @@ kotlin {
             implementation(projects.feature.devProfile.data)
             implementation(projects.feature.devProfile.presentation)
 
+            implementation(projects.feature.repoPages.domain)
+            implementation(projects.feature.repoPages.data)
+            implementation(projects.feature.repoPages.presentation)
+
             implementation(projects.feature.favourites.domain)
             implementation(projects.feature.favourites.data)
             implementation(projects.feature.favourites.presentation)
@@ -52,12 +64,14 @@ kotlin {
             implementation(projects.feature.home.data)
             implementation(projects.feature.home.presentation)
 
+            implementation(projects.feature.feed.domain)
+            implementation(projects.feature.feed.data)
+            implementation(projects.feature.feed.presentation)
+
             implementation(projects.feature.search.domain)
             implementation(projects.feature.search.data)
             implementation(projects.feature.search.presentation)
 
-            implementation(projects.feature.profile.domain)
-            implementation(projects.feature.profile.data)
             implementation(projects.feature.profile.presentation)
 
             implementation(projects.feature.starred.domain)
@@ -69,11 +83,11 @@ kotlin {
 
             implementation(libs.jetbrains.compose.navigation)
             implementation(libs.bundles.koin.common)
-            implementation(libs.liquid)
             implementation(libs.jetbrains.compose.material.icons.extended)
 
             implementation(libs.touchlab.kermit)
             implementation(libs.kotlinx.collections.immutable)
+            implementation(libs.kotlinx.serialization.json)
 
             implementation(libs.jetbrains.compose.runtime)
             implementation(libs.jetbrains.compose.foundation)
@@ -97,6 +111,7 @@ kotlin {
                 implementation(libs.koin.compose.viewmodel)
 
                 implementation(libs.slf4j.simple)
+                implementation(libs.jna.platform)
             }
         }
     }
@@ -106,7 +121,7 @@ compose.desktop {
     application {
         mainClass = "zed.rainxch.githubstore.DesktopAppKt"
         nativeDistributions {
-            packageName = "GitHub-Store"
+            packageName = "Komi-Store"
             packageVersion =
                 libs.versions.projectVersionName
                     .get()
@@ -127,7 +142,7 @@ compose.desktop {
             )
             windows {
                 iconFile.set(project.file("src/jvmMain/resources/logo/app_icon.ico"))
-                menuGroup = "Github Store"
+                menuGroup = "Komi Store"
                 shortcut = true
                 perUserInstall = true
             }
@@ -142,7 +157,7 @@ compose.desktop {
                         <array>
                             <dict>
                                 <key>CFBundleURLName</key>
-                                <string>GitHub Store Deep Link</string>
+                                <string>Komi Store Deep Link</string>
                                 <key>CFBundleURLSchemes</key>
                                 <array>
                                     <string>githubstore</string>
@@ -166,5 +181,29 @@ compose.desktop {
                 appCategory = "Development"
             }
         }
+    }
+}
+
+tasks.register("printRuntimeDependencies") {
+    description = "Lists all runtime dependencies for licenses.json maintenance."
+    group = "verification"
+    val coordinatesProvider: Provider<List<String>> =
+        project.provider {
+            val cfg =
+                configurations.findByName("releaseRuntimeClasspath")
+                    ?: configurations.findByName("androidReleaseRuntimeClasspath")
+                    ?: error("No release runtime classpath configuration found.")
+            cfg.incoming.resolutionResult.allComponents
+                .asSequence()
+                .map { it.id }
+                .filterIsInstance<ModuleComponentIdentifier>()
+                .map { "${it.group}:${it.module}:${it.version}" }
+                .distinct()
+                .sorted()
+                .toList()
+        }
+    notCompatibleWithConfigurationCache("Resolves Android variant configurations at execution time.")
+    doLast {
+        coordinatesProvider.get().forEach { println(it) }
     }
 }

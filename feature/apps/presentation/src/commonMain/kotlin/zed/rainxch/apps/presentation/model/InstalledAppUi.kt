@@ -1,6 +1,6 @@
 package zed.rainxch.apps.presentation.model
 
-import zed.rainxch.core.domain.model.InstallSource
+import zed.rainxch.core.domain.model.installation.InstallSource
 
 data class InstalledAppUi(
     val packageName: String,
@@ -47,4 +47,6 @@ data class InstalledAppUi(
     val pendingInstallFilePath: String? = null,
     val pendingInstallVersion: String? = null,
     val pendingInstallAssetName: String? = null,
+    val skippedReleaseTag: String? = null,
+    val sourceHost: String? = null,
 )

@@ -3,21 +3,20 @@ package zed.rainxch.core.data.network
 import io.ktor.client.*
 import io.ktor.client.call.body
 import io.ktor.client.plugins.*
+import io.ktor.client.plugins.HttpRedirect
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.util.network.UnresolvedAddressException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.Json
 import zed.rainxch.core.data.data_source.TokenStore
 import zed.rainxch.core.data.network.interceptor.RateLimitInterceptor
 import zed.rainxch.core.data.network.interceptor.UnauthorizedInterceptor
-import zed.rainxch.core.domain.model.ProxyConfig
-import zed.rainxch.core.domain.model.RateLimitException
-import zed.rainxch.core.domain.repository.AuthenticationState
+import zed.rainxch.core.domain.model.settings.ProxyConfig
+import zed.rainxch.core.domain.model.error.RateLimitException
+import zed.rainxch.core.domain.repository.UserSessionRepository
 import zed.rainxch.core.domain.repository.RateLimitRepository
 import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
@@ -27,8 +26,7 @@ expect fun createPlatformHttpClient(proxyConfig: ProxyConfig): HttpClient
 fun createGitHubHttpClient(
     tokenStore: TokenStore,
     rateLimitRepository: RateLimitRepository,
-    authenticationState: AuthenticationState? = null,
-    scope: CoroutineScope? = null,
+    userSessionRepository: UserSessionRepository? = null,
     proxyConfig: ProxyConfig = ProxyConfig.System,
 ): HttpClient {
     val json =
@@ -42,10 +40,9 @@ fun createGitHubHttpClient(
             this.rateLimitRepository = rateLimitRepository
         }
 
-        if (authenticationState != null && scope != null) {
+        if (userSessionRepository != null) {
             install(UnauthorizedInterceptor) {
-                this.authenticationState = authenticationState
-                this.scope = scope
+                this.userSessionRepository = userSessionRepository
             }
         }
 
@@ -77,6 +74,10 @@ fun createGitHubHttpClient(
             exponentialDelay()
         }
 
+        install(HttpRedirect) {
+            checkHttpMethod = false
+        }
+
         expectSuccess = false
 
         defaultRequest {
@@ -95,7 +96,7 @@ fun createGitHubHttpClient(
                 header(HttpHeaders.Authorization, "Bearer $token")
             }
         }
-    }
+    }.also { it.installMirrorRewrite() }
 }
 
 suspend inline fun <reified T> HttpClient.executeRequest(crossinline block: suspend HttpClient.() -> HttpResponse): Result<T> =
